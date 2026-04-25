@@ -806,7 +806,7 @@ st.markdown(
     '<div style="text-align:center;padding:1rem 0 0 0">'
     '<div class="header">B L U E &nbsp; J E A N S &nbsp; P I C T U R E S</div>'
     '<div class="brand-title">IDEA ENGINE</div>'
-    '<div class="sub">T R I A G E &nbsp; · &nbsp; L O C K E D &nbsp; · &nbsp; G O · N O G O &nbsp; · &nbsp; I N N O V A T I V E</div>'
+    '<div class="sub">Y O U N G &nbsp; · &nbsp; V I N T A G E &nbsp; · &nbsp; F R E E &nbsp; · &nbsp; I N N O V A T I V E</div>'
     '</div>',
     unsafe_allow_html=True,
 )
