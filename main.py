@@ -1,10 +1,16 @@
 """
-Idea Engine v1.0
-BLUE JEANS PICTURES · Creative Triage Engine
+Idea Engine v2.0
+BLUE JEANS PICTURES · Creative Discovery & Triage Engine
 
-Creator Engine 입구의 진단·판정 엔진.
-모호한 아이디어 → Hook 진단 → Format 추천 → Reference 매핑 →
-Market 진단 → 최종 GO/NoGo 판정 → LOCKED 시드 패키지 출력
+v1.0: TRIAGE 트랙 (7-Stage 진단·판정 → LOCKED 시드)
+v2.0: HUNTER 트랙 추가 (5개 입구 아이디어 발굴 엔진)
+
+[모드 분기]
+HOME → [HUNTER 발굴 | TRIAGE 진단] 선택
+HUNTER 출력 시드 → TRIAGE Stage 1 자동 전달
+
+[설계 철학]
+"카탈로그를 보여주는 게 아니라 작가 안에 잠재된 답을 끌어내기"
 
 Writer Engine v3.1 디자인 시스템 적용
 """
@@ -30,8 +36,8 @@ import prompt as P
 # ─────────────────────────────────────
 # Engine Info
 # ─────────────────────────────────────
-ENGINE_VERSION = "v1.0"
-ENGINE_BUILD_DATE = "2026-04-25"
+ENGINE_VERSION = "v2.0"
+ENGINE_BUILD_DATE = "2026-05-05"
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -47,6 +53,111 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ═══════════════════════════════════════════════════════════
+# Session State + Mode-Switch Helpers
+# (사이드바보다 먼저 정의되어야 함 — 사이드바 버튼이 호출함)
+# ═══════════════════════════════════════════════════════════
+def init_session_state():
+    defaults = {
+        # ── v2.0 모드 분기 ──
+        "mode": "HOME",                # HOME | HUNTER | TRIAGE
+        # ── HUNTER 트랙 (v2.0 신규) ──
+        "hunter_entry": None,          # None | "0" | "1" | "2" | "3" | "4" | "5"
+        "hunter_input": "",            # 입구 0 자유 텍스트 또는 입구별 입력
+        "hunter_classified": None,     # 입구 0 자동분류 결과 (Sonnet)
+        "hunter_stage_data": {},       # 입구별 진행 데이터 (질문 응답, 시드 후보 등)
+        "hunter_output": None,         # 최종 LOCKED 시드 JSON (TRIAGE 입력으로 전달)
+        # ── TRIAGE 트랙 (v1.0 호환) ──
+        "current_stage": 1,
+        "stage_1_input": None,
+        "stage_2_logline": None,
+        "stage_3_hook": None,
+        "stage_4_format": None,
+        "stage_5_reference": None,
+        "stage_6_market": None,
+        "stage_7_verdict": None,
+        "selected_logline": None,
+        "seed_loaded_from_hunter": False,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def reset_session():
+    keys_to_clear = [
+        "mode",
+        "hunter_entry", "hunter_input", "hunter_classified",
+        "hunter_stage_data", "hunter_output",
+        "current_stage", "stage_1_input", "stage_2_logline",
+        "stage_3_hook", "stage_4_format", "stage_5_reference",
+        "stage_6_market", "stage_7_verdict", "selected_logline",
+        "seed_loaded_from_hunter",
+    ]
+    for k in keys_to_clear:
+        if k in st.session_state:
+            del st.session_state[k]
+    init_session_state()
+
+
+def reset_triage_only():
+    """TRIAGE 트랙만 리셋 (HUNTER 결과는 보존)."""
+    keys = [
+        "current_stage", "stage_1_input", "stage_2_logline",
+        "stage_3_hook", "stage_4_format", "stage_5_reference",
+        "stage_6_market", "stage_7_verdict", "selected_logline",
+        "seed_loaded_from_hunter",
+    ]
+    for k in keys:
+        if k in st.session_state:
+            del st.session_state[k]
+    st.session_state["current_stage"] = 1
+    st.session_state["seed_loaded_from_hunter"] = False
+
+
+def reset_hunter_only():
+    """HUNTER 트랙만 리셋 (TRIAGE 진행 상태는 보존)."""
+    keys = [
+        "hunter_entry", "hunter_input", "hunter_classified",
+        "hunter_stage_data", "hunter_output",
+    ]
+    for k in keys:
+        if k in st.session_state:
+            del st.session_state[k]
+    st.session_state["hunter_entry"] = None
+    st.session_state["hunter_input"] = ""
+    st.session_state["hunter_stage_data"] = {}
+
+
+def transfer_hunter_seed_to_triage():
+    """HUNTER 출력 시드를 TRIAGE Stage 1 입력 형식으로 변환 후 전달.
+
+    HUNTER 시드 JSON 예상 스키마:
+    {
+        "title": str, "genre": str, "target_market": str,
+        "format_pref": str, "raw_idea": str,
+        "hunter_meta": {"entry": "1"~"5", "discovery_notes": [...]}
+    }
+    """
+    seed = st.session_state.get("hunter_output")
+    if not seed:
+        return False
+
+    st.session_state["stage_1_input"] = {
+        "title": seed.get("title", "(제목 미정)"),
+        "genre": seed.get("genre", "장르 미정"),
+        "target_market": seed.get("target_market", "한국 + 글로벌"),
+        "format": seed.get("format_pref", "미정 (Idea Engine이 추천)"),
+        "raw_idea": seed.get("raw_idea", ""),
+        "_hunter_meta": seed.get("hunter_meta", {}),
+    }
+    st.session_state["current_stage"] = 1
+    st.session_state["seed_loaded_from_hunter"] = True
+    return True
+
+
+init_session_state()
+
 # ─────────────────────────────────────
 # Sidebar Engine Info (Writer Engine 동일)
 # ─────────────────────────────────────
@@ -60,21 +171,65 @@ with st.sidebar:
         </div>
         <div style="font-size:.7rem;color:#666;margin-top:8px;">
             Build: {ENGINE_BUILD_DATE}<br>
-            Creator Engine 입구 게이트
+            HUNTER 발굴 + TRIAGE 진단
         </div>
     </div>
     """, unsafe_allow_html=True)
-    
+
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-    
+
+    # ── 모드 전환 패널 (v2.0 신규) ──
+    current_mode = st.session_state.get("mode", "HOME")
+    mode_label_map = {
+        "HOME": "🏠 HOME",
+        "HUNTER": "🎯 HUNTER (발굴)",
+        "TRIAGE": "🔍 TRIAGE (진단)",
+    }
+    st.markdown(f"""
+    <div style="padding:10px;background:#191970;border-radius:8px;font-family:'Pretendard',sans-serif;">
+        <div style="font-size:.7rem;color:#FFCB05;font-weight:700;letter-spacing:.05em;margin-bottom:4px;">CURRENT MODE</div>
+        <div style="font-size:.95rem;color:#fff;font-weight:700;">{mode_label_map[current_mode]}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    st.markdown("###### 🔀 모드 전환")
+
+    if st.button("🏠 홈", key="nav_home", use_container_width=True):
+        st.session_state["mode"] = "HOME"
+        st.rerun()
+    if st.button("🎯 HUNTER 트랙", key="nav_hunter", use_container_width=True):
+        st.session_state["mode"] = "HUNTER"
+        st.session_state["hunter_entry"] = None
+        st.rerun()
+    if st.button("🔍 TRIAGE 트랙", key="nav_triage", use_container_width=True):
+        st.session_state["mode"] = "TRIAGE"
+        st.rerun()
+
+    # ── HUNTER → TRIAGE 시드 전송 (시드 준비된 경우만 노출) ──
+    if st.session_state.get("hunter_output"):
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style="padding:8px 10px;background:#FFCB05;border-radius:6px;font-family:'Pretendard',sans-serif;font-size:.75rem;color:#191970;font-weight:700;">
+            🔗 HUNTER 시드 준비됨
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("→ TRIAGE로 전송", key="seed_to_triage", use_container_width=True, type="primary"):
+            transfer_hunter_seed_to_triage()
+            st.session_state["mode"] = "TRIAGE"
+            st.rerun()
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style="padding:10px;background:#FFF8DC;border-radius:8px;font-family:'Pretendard',sans-serif;font-size:.78rem;">
         <div style="font-weight:700;color:#191970;margin-bottom:4px;">🤖 모델 정책</div>
         <div style="color:#444;">진단 ②~⑥: <b>Sonnet 4.6</b></div>
         <div style="color:#444;">최종 판정 ⑦: <b>Opus 4.7</b></div>
+        <div style="color:#444;">HUNTER 발굴: <b>Sonnet 4.6</b></div>
     </div>
     """, unsafe_allow_html=True)
-    
+
     st.caption("버전이 최신인지 확인하세요.")
 
 # ─────────────────────────────────────
@@ -320,41 +475,6 @@ details[open] > div { background-color: var(--card) !important; }
 .locked-card .field-value:last-child { margin-bottom: 0; }
 </style>
 """, unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────
-# Session State
-# ─────────────────────────────────────
-def init_session_state():
-    defaults = {
-        "current_stage": 1,
-        "stage_1_input": None,
-        "stage_2_logline": None,
-        "stage_3_hook": None,
-        "stage_4_format": None,
-        "stage_5_reference": None,
-        "stage_6_market": None,
-        "stage_7_verdict": None,
-        "selected_logline": None,
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-
-def reset_session():
-    keys_to_clear = [
-        "current_stage", "stage_1_input", "stage_2_logline",
-        "stage_3_hook", "stage_4_format", "stage_5_reference",
-        "stage_6_market", "stage_7_verdict", "selected_logline"
-    ]
-    for k in keys_to_clear:
-        if k in st.session_state:
-            del st.session_state[k]
-    init_session_state()
-
-
-init_session_state()
 
 
 # ─────────────────────────────────────
@@ -1527,45 +1647,185 @@ def page_stage_7():
 
 
 # ═══════════════════════════════════════════════════════════
-# MAIN ROUTING
+# v2.0 — HOME PAGE
 # ═══════════════════════════════════════════════════════════
+def page_home():
+    """모드 선택 진입 화면. HUNTER vs TRIAGE 두 카드 제시."""
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="callout">'
+        '<b>Idea Engine v2.0</b>은 두 개의 트랙으로 구성됩니다. '
+        '머릿속에 아직 아이디어가 없다면 <b>HUNTER</b>로 발굴하시고, '
+        '이미 아이디어가 있다면 <b>TRIAGE</b>로 진단하세요. '
+        'HUNTER에서 발굴한 시드는 자동으로 TRIAGE Stage 1로 전달됩니다.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-render_stepper(st.session_state.get("current_stage", 1))
+    col1, col2 = st.columns(2, gap="large")
 
-stage = st.session_state.get("current_stage", 1)
+    with col1:
+        st.markdown("""
+        <div style="border:2px solid #E2E2E0;border-radius:14px;padding:28px 26px;background:#fff;height:100%;">
+            <div style="display:inline-block;background:#FFCB05;color:#191970;font-size:.72rem;font-weight:700;padding:4px 10px;border-radius:999px;letter-spacing:.05em;margin-bottom:12px;">HUNTER · 발굴</div>
+            <div style="font-family:'Playfair Display',serif;font-size:1.8rem;font-weight:700;color:#191970;margin-bottom:6px;">아이디어가 아직 없을 때</div>
+            <div style="color:#6B6B7A;font-size:.95rem;margin-bottom:18px;line-height:1.5;">5개의 입구 중 하나로 들어가 작가 안에 잠재된 답을 끌어냅니다.</div>
+            <div style="color:#1A1A2E;font-size:.9rem;line-height:1.85;">
+                <b>입구 1</b> — 욕망 ("로맨스 만들고 싶다")<br>
+                <b>입구 2</b> — 시대 ("IMF 때 이야기")<br>
+                <b>입구 3</b> — 트렌드 ("회빙환 해야 하나")<br>
+                <b>입구 4</b> — What if ("로또+일주일 루프")<br>
+                <b>입구 5</b> — 사실 ("1945.8.15. 일본인")<br>
+                <b>입구 0</b> — 자유 텍스트 (자동 분류)
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+        if st.button("🎯 HUNTER 트랙 시작", key="home_to_hunter", type="primary", use_container_width=True):
+            st.session_state["mode"] = "HUNTER"
+            st.session_state["hunter_entry"] = None
+            st.rerun()
 
-if stage == 1:
-    page_stage_1()
-elif stage == 2:
-    if not st.session_state.get("stage_1_input"):
-        st.warning("Stage 1을 먼저 완료해주세요.")
+    with col2:
+        st.markdown("""
+        <div style="border:2px solid #E2E2E0;border-radius:14px;padding:28px 26px;background:#fff;height:100%;">
+            <div style="display:inline-block;background:#191970;color:#FFCB05;font-size:.72rem;font-weight:700;padding:4px 10px;border-radius:999px;letter-spacing:.05em;margin-bottom:12px;">TRIAGE · 진단</div>
+            <div style="font-family:'Playfair Display',serif;font-size:1.8rem;font-weight:700;color:#191970;margin-bottom:6px;">이미 아이디어가 있을 때</div>
+            <div style="color:#6B6B7A;font-size:.95rem;margin-bottom:18px;line-height:1.5;">7단계 진단으로 GO/CONDITIONAL/NOGO 판정 + LOCKED 시드 패키지 생성.</div>
+            <div style="color:#1A1A2E;font-size:.9rem;line-height:1.85;">
+                <b>1</b> 아이디어 입력<br>
+                <b>2</b> 로그라인 정제<br>
+                <b>3</b> Hook 진단 (Gate 0)<br>
+                <b>4</b> Format 추천<br>
+                <b>5</b> Reference 매핑<br>
+                <b>6</b> Market 진단<br>
+                <b>7</b> 최종 판정 (Opus 4.7)
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+        if st.button("🔍 TRIAGE 트랙 시작", key="home_to_triage", use_container_width=True):
+            st.session_state["mode"] = "TRIAGE"
+            st.rerun()
+
+    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+    st.markdown(
+        '<div style="text-align:center;color:#8E8E99;font-size:.82rem;font-family:Pretendard,sans-serif;">'
+        '"카탈로그를 보여주는 게 아니라 작가 안에 잠재된 답을 끌어내기"'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# v2.0 — HUNTER PAGES (골격 — 2~4단계에서 채움)
+# ═══════════════════════════════════════════════════════════
+def page_hunter_select():
+    """입구 선택 화면. 입구 0 자유 텍스트 + 입구 1~5 카드."""
+    section_header("🎯 HUNTER · 입구 선택", "CHOOSE YOUR ENTRY")
+    small_meta(
+        "5개 입구 중 하나로 들어가시거나, 입구 0에 자유롭게 입력하시면 자동 분류됩니다. "
+        "각 입구는 작가의 영감 유형에 맞춘 사고 확장 엔진입니다."
+    )
+
+    st.info("🚧 **2단계 작업 예정** — 입구 0 자유 텍스트 입력 + 입구 1~5 선택 카드 UI를 다음 단계에서 구현합니다.")
+
+    # 임시 디버그 (개발 중 모드 확인용)
+    with st.expander("개발자: 현재 HUNTER 상태", expanded=False):
+        st.json({
+            "mode": st.session_state.get("mode"),
+            "hunter_entry": st.session_state.get("hunter_entry"),
+            "hunter_input": st.session_state.get("hunter_input"),
+            "hunter_output": st.session_state.get("hunter_output"),
+        })
+
+
+def page_hunter_entry(entry_id: str):
+    """입구별 페이지 (1~5). 3단계에서 prompt.py 추가 후 4단계에서 본격 구현."""
+    entry_titles = {
+        "1": ("욕망 트리거", "DESIRE PROMPT"),
+        "2": ("시대 트리거", "PERIOD PROMPT"),
+        "3": ("트렌드 협상", "TREND NEGOTIATION"),
+        "4": ("What if 확장", "HYPOTHESIS EXPANSION"),
+        "5": ("사실 발굴", "FACT EXCAVATION"),
+    }
+    kr, en = entry_titles.get(entry_id, ("입구", "ENTRY"))
+    section_header(f"🎯 HUNTER · 입구 {entry_id} — {kr}", en)
+
+    st.info(f"🚧 **4단계 작업 예정** — 입구 {entry_id}({kr}) 페이지 구현은 prompt.py 작성(3단계) 이후 진행됩니다.")
+
+    col_back, _ = st.columns([1, 4])
+    with col_back:
+        if st.button("← 입구 선택으로", key=f"hunter_back_{entry_id}", use_container_width=True):
+            st.session_state["hunter_entry"] = None
+            st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════
+# MAIN ROUTING (v2.0 — 3-way mode dispatch)
+# ═══════════════════════════════════════════════════════════
+mode = st.session_state.get("mode", "HOME")
+
+if mode == "HOME":
+    page_home()
+
+elif mode == "HUNTER":
+    entry = st.session_state.get("hunter_entry")
+    if entry is None:
+        page_hunter_select()
     else:
-        page_stage_2()
-elif stage == 3:
-    if not st.session_state.get("stage_2_logline") or not st.session_state.get("selected_logline"):
-        st.warning("Stage 2를 먼저 완료해주세요.")
-    else:
-        page_stage_3()
-elif stage == 4:
-    if not st.session_state.get("stage_3_hook"):
-        st.warning("Stage 3을 먼저 완료해주세요.")
-    else:
-        page_stage_4()
-elif stage == 5:
-    if not st.session_state.get("stage_4_format"):
-        st.warning("Stage 4를 먼저 완료해주세요.")
-    else:
-        page_stage_5()
-elif stage == 6:
-    if not st.session_state.get("stage_5_reference"):
-        st.warning("Stage 5를 먼저 완료해주세요.")
-    else:
-        page_stage_6()
-elif stage == 7:
-    if not st.session_state.get("stage_6_market"):
-        st.warning("Stage 6을 먼저 완료해주세요.")
-    else:
-        page_stage_7()
+        page_hunter_entry(entry)
+
+elif mode == "TRIAGE":
+    # HUNTER에서 시드가 전달된 경우 안내 배너 노출
+    if st.session_state.get("seed_loaded_from_hunter"):
+        st.success(
+            "🔗 HUNTER 트랙에서 발굴한 시드가 Stage 1에 자동 입력되었습니다. "
+            "내용을 확인하시고 진단을 시작하세요."
+        )
+
+    render_stepper(st.session_state.get("current_stage", 1))
+
+    stage = st.session_state.get("current_stage", 1)
+
+    if stage == 1:
+        page_stage_1()
+    elif stage == 2:
+        if not st.session_state.get("stage_1_input"):
+            st.warning("Stage 1을 먼저 완료해주세요.")
+        else:
+            page_stage_2()
+    elif stage == 3:
+        if not st.session_state.get("stage_2_logline") or not st.session_state.get("selected_logline"):
+            st.warning("Stage 2를 먼저 완료해주세요.")
+        else:
+            page_stage_3()
+    elif stage == 4:
+        if not st.session_state.get("stage_3_hook"):
+            st.warning("Stage 3을 먼저 완료해주세요.")
+        else:
+            page_stage_4()
+    elif stage == 5:
+        if not st.session_state.get("stage_4_format"):
+            st.warning("Stage 4를 먼저 완료해주세요.")
+        else:
+            page_stage_5()
+    elif stage == 6:
+        if not st.session_state.get("stage_5_reference"):
+            st.warning("Stage 5를 먼저 완료해주세요.")
+        else:
+            page_stage_6()
+    elif stage == 7:
+        if not st.session_state.get("stage_6_market"):
+            st.warning("Stage 6을 먼저 완료해주세요.")
+        else:
+            page_stage_7()
+
+else:
+    # 알 수 없는 모드 — 안전 fallback
+    st.warning("알 수 없는 모드입니다. 홈으로 돌아갑니다.")
+    st.session_state["mode"] = "HOME"
+    st.rerun()
 
 st.markdown("---")
 st.caption(f"© 2026 BLUE JEANS PICTURES · Idea Engine {ENGINE_VERSION}")
