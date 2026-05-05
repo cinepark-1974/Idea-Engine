@@ -3,6 +3,9 @@ Idea Engine v2.0
 BLUE JEANS PICTURES · Creative Discovery & Triage Engine
 
 v1.0: TRIAGE 트랙 (7-Stage 진단·판정 → LOCKED 시드)
+v1.1: Creator Engine v2.5.2 정합 — 5개 신규 LOCKED 키 출력
+      (locked_core_decisions / locked_music_rules / locked_visual_motifs
+       / locked_ending_form / locked_creator_questions)
 v2.0: HUNTER 트랙 추가 (5개 입구 아이디어 발굴 엔진)
 
 [모드 분기]
@@ -38,6 +41,7 @@ import prompt as P
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
 ENGINE_BUILD_DATE = "2026-05-05"
+ENGINE_PATCH_LEVEL = "v2.0 (HUNTER 골격) + v1.1 패치 (Creator Engine v2.5.2 정합 5키)"
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -171,7 +175,8 @@ with st.sidebar:
         </div>
         <div style="font-size:.7rem;color:#666;margin-top:8px;">
             Build: {ENGINE_BUILD_DATE}<br>
-            HUNTER 발굴 + TRIAGE 진단
+            HUNTER 발굴 + TRIAGE 진단<br>
+            <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -880,6 +885,131 @@ def build_diagnostic_docx(state: Dict[str, Any]) -> bytes:
         for risk in seed.get("locked_risks_to_address", []):
             add_para(doc, f"  • {risk}")
 
+        # ════════════════════════════════════════════════════════
+        # v1.1 — Creator Engine v2.5.2 정합 5개 신규 LOCKED 영역
+        # ════════════════════════════════════════════════════════
+        doc.add_paragraph()
+        add_section_header_docx(
+            doc, "v1.1 신규 LOCKED 영역",
+            "CREATOR ENGINE v2.5.2 ABSORPTION KEYS"
+        )
+        add_para(
+            doc,
+            "Creator Engine v2.5.2가 작품 본질로 절대 보존하는 5개 영역. "
+            "「오랜만에」 검증에서 발견된 핵심 모티프 휘발(61%)을 차단하기 위해 도입.",
+            italic=True, size=10,
+        )
+        doc.add_paragraph()
+
+        # ① locked_core_decisions
+        core_decisions = seed.get("locked_core_decisions", []) or []
+        add_para(doc, f"① 확정된 핵심 결정 (locked_core_decisions) — {len(core_decisions)}건", bold=True)
+        if not core_decisions:
+            add_para(doc, "  (이 작품에는 별도로 LOCK된 핵심 결정이 없음 — 빈 배열)", italic=True, size=10)
+        else:
+            for d in core_decisions:
+                if isinstance(d, dict):
+                    cat = d.get("category", "")
+                    rule = d.get("rule", "") or d.get("decision", "")
+                    rationale = d.get("rationale", "")
+                    if cat and rule:
+                        add_para(doc, f"  • [{cat}] {rule}")
+                    elif rule:
+                        add_para(doc, f"  • {rule}")
+                    if rationale:
+                        add_para(doc, f"      근거: {rationale}", italic=True, size=10)
+                elif isinstance(d, str):
+                    add_para(doc, f"  • {d}")
+        doc.add_paragraph()
+
+        # ② locked_music_rules
+        music_rules = seed.get("locked_music_rules", {}) or {}
+        add_para(
+            doc,
+            f"② 음악 사용 규약 (locked_music_rules) — {'있음' if music_rules else '없음 (빈 객체)'}",
+            bold=True,
+        )
+        if not music_rules:
+            add_para(doc, "  (이 작품에는 음악 사용 규약이 없음 — 액션·스릴러·호러에서 자주 발생)", italic=True, size=10)
+        elif isinstance(music_rules, dict):
+            for k, v in music_rules.items():
+                if isinstance(v, list):
+                    add_para(doc, f"  • [{k}]")
+                    for item in v:
+                        add_para(doc, f"      - {item}")
+                else:
+                    add_para(doc, f"  • [{k}] {v}")
+        elif isinstance(music_rules, list):
+            for r in music_rules:
+                add_para(doc, f"  • {r}")
+        else:
+            add_para(doc, f"  • {music_rules}")
+        doc.add_paragraph()
+
+        # ③ locked_visual_motifs
+        visual_motifs = seed.get("locked_visual_motifs", []) or []
+        add_para(doc, f"③ 시각 모티프 (locked_visual_motifs) — {len(visual_motifs)}건", bold=True)
+        if not visual_motifs:
+            add_para(doc, "  (이 작품에는 LOCK된 시각 모티프가 없음 — 빈 배열)", italic=True, size=10)
+        else:
+            for m in visual_motifs:
+                if isinstance(m, dict):
+                    motif = m.get("motif", "") or m.get("name", "")
+                    function = m.get("function", "") or m.get("role", "")
+                    if motif and function:
+                        add_para(doc, f"  • {motif} → {function}")
+                    elif motif:
+                        add_para(doc, f"  • {motif}")
+                elif isinstance(m, str):
+                    add_para(doc, f"  • {m}")
+        doc.add_paragraph()
+
+        # ④ locked_ending_form
+        ending_form = seed.get("locked_ending_form", {}) or {}
+        add_para(
+            doc,
+            f"④ 결말 형식 (locked_ending_form) — {'LOCK됨' if ending_form else '미확정 (빈 객체)'}",
+            bold=True,
+        )
+        if not ending_form:
+            add_para(doc, "  (결말 형식이 LOCK되지 않음 — Creator Engine이 결정)", italic=True, size=10)
+        elif isinstance(ending_form, dict):
+            if ending_form.get("type"):
+                add_para(doc, f"  • 결말 유형: {ending_form['type']}")
+            if ending_form.get("emotional_resolution"):
+                add_para(doc, f"  • 정서적 해소: {ending_form['emotional_resolution']}")
+            if ending_form.get("final_image"):
+                add_para(doc, f"  • 마지막 이미지: {ending_form['final_image']}")
+            if ending_form.get("forbidden"):
+                add_para(doc, f"  • 금지 패턴: {ending_form['forbidden']}")
+        else:
+            add_para(doc, f"  • {ending_form}")
+        doc.add_paragraph()
+
+        # ⑤ locked_creator_questions
+        creator_questions = seed.get("locked_creator_questions", []) or []
+        add_para(
+            doc,
+            f"⑤ Creator Engine 결정 의제 (locked_creator_questions) — {len(creator_questions)}건",
+            bold=True,
+        )
+        if not creator_questions:
+            add_para(doc, "  (Creator Engine이 답할 의제가 없음 — 빈 배열)", italic=True, size=10)
+        else:
+            for q in creator_questions:
+                if isinstance(q, dict):
+                    question = q.get("question", "")
+                    options = q.get("options", []) or []
+                    importance = q.get("importance", "")
+                    line = f"  • {question}"
+                    if importance:
+                        line += f"  [중요도: {importance.upper()}]"
+                    add_para(doc, line)
+                    if options:
+                        add_para(doc, f"      후보: {' / '.join(str(o) for o in options)}", italic=True, size=10)
+                elif isinstance(q, str):
+                    add_para(doc, f"  • {q}")
+
     doc.add_paragraph()
     doc.add_paragraph()
     footer = doc.add_paragraph()
@@ -899,9 +1029,20 @@ def build_seed_json(state: Dict[str, Any]) -> str:
     if not state.get("stage_7_verdict"):
         return "{}"
     seed = state["stage_7_verdict"].get("locked_seed_package", {})
+
+    # ─── v1.1: Creator Engine v2.5.2 정합 5개 신규 키 빈 값 보장 ───
+    # 작품 특성상 해당 없는 영역도 키 자체는 명시 출력 (Creator Engine이
+    # "Idea Engine이 의식적으로 비웠다"는 신호로 해석)
+    seed.setdefault("locked_core_decisions", [])
+    seed.setdefault("locked_music_rules", {})
+    seed.setdefault("locked_visual_motifs", [])
+    seed.setdefault("locked_ending_form", {})
+    seed.setdefault("locked_creator_questions", [])
+
     creator_input = {
         "_idea_engine_meta": {
             "version": ENGINE_VERSION,
+            "patch": "v1.1 (Creator Engine v2.5.2 정합 5키)",
             "generated_at": datetime.now().isoformat(),
             "project_id": seed.get("project_id", ""),
             "verdict": state["stage_7_verdict"].get("final_verdict", ""),
@@ -1465,14 +1606,15 @@ def page_stage_6():
 def page_stage_7():
     section_header("⚖ STEP 7 · 최종 판정", "OPUS · GO / CONDITIONAL / NOGO")
     small_meta("Opus 4.7이 6개 진단 결과를 종합하여 최종 판정과 LOCKED 시드 패키지를 확정합니다.")
-    
+
     inp = st.session_state["stage_1_input"]
-    
+
     if not st.session_state.get("stage_7_verdict"):
         st.markdown("""
         <div class="callout">
         <b>Opus 4.7 최종 판정</b><br>
         모든 진단 데이터를 종합하여 GO/CONDITIONAL/NOGO 판정을 내리고, Creator Engine 입력용 LOCKED 시드 패키지를 확정합니다.<br>
+        <span style="color:#191970;font-weight:600;">v1.1 — Creator Engine v2.5.2 정합:</span> 핵심 결정·음악 규약·시각 모티프·결말 형식·Creator 의제 5개 신규 LOCKED 영역도 함께 산출됩니다.<br>
         소요 시간: 60~90초
         </div>
         """, unsafe_allow_html=True)
@@ -1605,7 +1747,137 @@ def page_stage_7():
         st.markdown("**Risks to Address (Creator Engine 진행 시 다룰 것)**")
         for r in seed.get("locked_risks_to_address", []):
             st.markdown(f"- {r}")
-        
+
+        # ═══════════════════════════════════════════════════════
+        # v1.1 — Creator Engine v2.5.2 정합 5개 신규 LOCKED 영역
+        # ═══════════════════════════════════════════════════════
+        st.markdown("---")
+        section_header(
+            "🔒 v1.1 신규 LOCKED 영역",
+            "CREATOR ENGINE v2.5.2 ABSORPTION KEYS"
+        )
+        st.caption(
+            "Creator Engine v2.5.2가 작품 본질로 절대 보존하는 5개 영역. "
+            "「오랜만에」 검증에서 발견된 핵심 모티프 휘발(61%)을 차단하기 위해 도입."
+        )
+
+        # ① locked_core_decisions
+        core_decisions = seed.get("locked_core_decisions", []) or []
+        with st.expander(
+            f"① 확정된 핵심 결정 (locked_core_decisions) · {len(core_decisions)}건",
+            expanded=bool(core_decisions),
+        ):
+            if not core_decisions:
+                st.caption("이 작품에는 별도로 LOCK된 핵심 결정이 없습니다 (빈 배열).")
+            else:
+                for d in core_decisions:
+                    if isinstance(d, dict):
+                        cat = d.get("category", "")
+                        rule = d.get("rule", "") or d.get("decision", "")
+                        rationale = d.get("rationale", "")
+                        if cat:
+                            st.markdown(f"**[{cat}]** {rule}")
+                        else:
+                            st.markdown(f"- {rule}")
+                        if rationale:
+                            st.caption(f"근거: {rationale}")
+                    elif isinstance(d, str):
+                        st.markdown(f"- {d}")
+
+        # ② locked_music_rules
+        music_rules = seed.get("locked_music_rules", {}) or {}
+        with st.expander(
+            f"② 음악 사용 규약 (locked_music_rules) · {'있음' if music_rules else '없음'}",
+            expanded=bool(music_rules),
+        ):
+            if not music_rules:
+                st.caption("이 작품에는 음악 사용 규약이 없습니다 (빈 객체). 액션·스릴러·호러에서 자주 발생.")
+            elif isinstance(music_rules, dict):
+                for k, v in music_rules.items():
+                    if isinstance(v, list):
+                        st.markdown(f"**{k}**")
+                        for item in v:
+                            st.markdown(f"- {item}")
+                    else:
+                        st.markdown(f"**{k}**: {v}")
+            elif isinstance(music_rules, list):
+                for r in music_rules:
+                    st.markdown(f"- {r}")
+            else:
+                st.markdown(str(music_rules))
+
+        # ③ locked_visual_motifs
+        visual_motifs = seed.get("locked_visual_motifs", []) or []
+        with st.expander(
+            f"③ 시각 모티프 (locked_visual_motifs) · {len(visual_motifs)}건",
+            expanded=bool(visual_motifs),
+        ):
+            if not visual_motifs:
+                st.caption("이 작품에는 LOCK된 시각 모티프가 없습니다 (빈 배열).")
+            else:
+                for m in visual_motifs:
+                    if isinstance(m, dict):
+                        motif = m.get("motif", "") or m.get("name", "")
+                        function = m.get("function", "") or m.get("role", "")
+                        if motif and function:
+                            st.markdown(f"**{motif}** → {function}")
+                        elif motif:
+                            st.markdown(f"- {motif}")
+                    elif isinstance(m, str):
+                        st.markdown(f"- {m}")
+
+        # ④ locked_ending_form
+        ending_form = seed.get("locked_ending_form", {}) or {}
+        with st.expander(
+            f"④ 결말 형식 (locked_ending_form) · {'LOCK됨' if ending_form else '미확정'}",
+            expanded=bool(ending_form),
+        ):
+            if not ending_form:
+                st.caption("결말 형식이 LOCK되지 않았습니다 (빈 객체). Creator Engine이 결정.")
+            elif isinstance(ending_form, dict):
+                if ending_form.get("type"):
+                    st.markdown(f"**결말 유형**: {ending_form['type']}")
+                if ending_form.get("emotional_resolution"):
+                    st.markdown(f"**정서적 해소**: {ending_form['emotional_resolution']}")
+                if ending_form.get("final_image"):
+                    st.markdown(f"**마지막 이미지**: {ending_form['final_image']}")
+                if ending_form.get("forbidden"):
+                    st.warning(f"**금지 패턴**: {ending_form['forbidden']}")
+            else:
+                st.markdown(str(ending_form))
+
+        # ⑤ locked_creator_questions
+        creator_questions = seed.get("locked_creator_questions", []) or []
+        with st.expander(
+            f"⑤ Creator Engine 결정 의제 (locked_creator_questions) · {len(creator_questions)}건",
+            expanded=bool(creator_questions),
+        ):
+            if not creator_questions:
+                st.caption("Creator Engine이 답할 의제가 없습니다 (빈 배열).")
+            else:
+                for q in creator_questions:
+                    if isinstance(q, dict):
+                        question = q.get("question", "")
+                        options = q.get("options", []) or []
+                        importance = q.get("importance", "")
+                        line = f"**{question}**"
+                        if importance:
+                            badge_color = {
+                                "high": "#C62828",
+                                "medium": "#F9A825",
+                                "low": "#2E7D32",
+                            }.get(importance.lower(), "#666")
+                            line += (
+                                f" <span style='background:{badge_color};color:white;"
+                                f"font-size:.7rem;padding:2px 6px;border-radius:4px;"
+                                f"margin-left:6px;'>{importance.upper()}</span>"
+                            )
+                        st.markdown(line, unsafe_allow_html=True)
+                        if options:
+                            st.caption(f"후보: {' / '.join(str(o) for o in options)}")
+                    elif isinstance(q, str):
+                        st.markdown(f"- {q}")
+
         st.markdown("---")
         section_header("⬇ STEP 8 · 다운로드", "EXPORT")
         

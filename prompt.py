@@ -1,11 +1,25 @@
 """
-Idea Engine v1.0 - Prompt System
+Idea Engine v1.1 - Prompt System
 BLUE JEANS PICTURES · Creative Triage Engine
 
 Creator Engine 입구의 진단·판정 엔진.
 모호한 아이디어를 받아 Hook 진단 → Format 추천 → Reference 매핑 →
 Market 분석 → 최종 GO/NoGo 판정을 거쳐
 Creator Engine이 받아먹을 수 있는 LOCKED 시드 패키지를 생성한다.
+
+[v1.1 변경 사항 — 2026-05-05]
+Creator Engine v2.5.2가 흡수하는 5개 신규 LOCKED 영역을 시드 출력에 추가.
+「오랜만에」 검증에서 발견된 핵심 모티프 휘발(11/18, 61%) 문제를
+시드 출력 단계에서 차단한다.
+
+신규 5개 키 (locked_seed_package 안에 포함):
+  1. locked_core_decisions      — 확정된 핵심 결정 (포맷·결말·음악·스타일)
+  2. locked_music_rules         — 음악·노래·OST 사용 규약 (장르별 선택)
+  3. locked_visual_motifs       — 두 타임라인·두 세계 연결 시각 오브제
+  4. locked_ending_form         — 결말 형식의 본질 (헤어짐/결합/모호 등)
+  5. locked_creator_questions   — Creator Engine이 답해야 할 미해결 질문
+
+Creator Engine v2.5.2 main.py(line 3777~3860)와 1:1 정합되도록 필드명·타입 동일.
 """
 
 # ============================================================================
@@ -430,6 +444,53 @@ FINAL_VERDICT_PROMPT = """당신은 한국 영화/드라마 산업의 시니어 
    - 이게 가장 중요한 산출물.
    - Creator Engine ① 화면이 이걸로 자동 채워진다.
    - 나머지 5개 진단 결과를 모두 통합한 결정판.
+   - v1.1: 5개 신규 LOCKED 영역(핵심 결정·음악 규약·시각 모티프·결말 형식·Creator 의제)을
+     반드시 구조화 객체로 출력. 작품 특성상 해당 없는 영역은 빈 배열/빈 객체로 명시.
+
+[★ v1.1 신규 5개 LOCKED 영역 작성 지침 — 매우 중요 ★]
+
+이 5개 영역은 Creator Engine v2.5.2가 직접 흡수하여 작품 본질로 절대 보존한다.
+Idea Engine 단계에서 이 5개 영역을 명시적으로 LOCK해두지 않으면, Creator Engine
+이후 단계(Brainstorm/Core/Character/Structure/Treatment)에서 핵심 모티프가 휘발된다.
+「오랜만에」 케이스에서 18개 핵심 모티프 중 11개(61%)가 휘발된 결함이 이 영역의
+출력 누락에서 비롯되었다.
+
+(1) locked_core_decisions — 작품 본질로 LOCK된 결정 사항 배열
+    - 포맷·결말·음악·스타일·구조 등 작가가 본질로 결정한 사항.
+    - 진단 6개 단계에서 자연스럽게 도출된 결정을 구조화 객체로 정리.
+    - 모든 작품에 최소 2개 이상 (포맷 결정은 항상 있음).
+    - category는 "포맷" / "결말" / "음악" / "스타일" / "구조" / "톤" 등.
+    - rule은 "~로 LOCK" 형태로 단호하게 1~2문장.
+
+(2) locked_music_rules — 음악 사용 규약 (장르 특화)
+    - 멜로/음악·청춘·시대극에 자주 적용. 액션/스릴러/호러는 빈 객체 {}.
+    - 통화연결음·디제틱 사운드·OST 배치 방식·금지 사항을 명시.
+    - 작품에 음악 규약이 없으면 반드시 빈 객체 {}로 명시 출력 (Idea Engine이
+      의식적으로 비웠다는 신호).
+
+(3) locked_visual_motifs — 두 타임라인·두 세계 연결 오브제 배열
+    - 듀얼 타임라인·회상 구조 작품에 필수. 단일 타임라인 작품은 0~1개.
+    - Stage 3 Hook 보강 제안과 Creator Questions에 후보가 나오는 경우가 많음.
+    - 각 모티프는 {motif, function} 객체로. function은 작품 내 기능 1문장.
+
+(4) locked_ending_form — 결말 형식의 본질
+    - 결말이 작품 본질에 가까운 작품(반전·헤어짐·희생·수용 등)에 필수.
+    - 평범한 해피엔딩이거나 결말이 미확정이면 빈 객체 {}.
+    - type, emotional_resolution, final_image, forbidden 4개 필드.
+    - forbidden 필드는 "결합 금지", "재회 약속 금지" 같이 단호하게 명시.
+
+(5) locked_creator_questions — Creator Engine 결정 의제 배열
+    - Idea Engine이 답하지 않은(혹은 의도적으로 위임한) 작품 본질 질문.
+    - 모든 작품에 2~5개 (의제는 항상 존재).
+    - 후보 옵션이 보이면 options 배열로 함께 출력.
+    - importance는 "high" / "medium" / "low" 중 하나.
+    - 기존 pending_decisions_for_creator(자연어 배열)와 별개로 구조화 객체로도 출력.
+      (자연어와 구조화 양쪽 모두 출력 — 호환성 보장)
+
+[빈 값 처리 원칙]
+해당 작품에 적용되지 않는 키는 키 자체를 생략하지 말고, 빈 배열 [] 또는 빈 객체 {}로
+명시 출력. 키 부재가 아닌 빈 값은 "Idea Engine이 의식적으로 비웠다"는 신호로
+Creator Engine이 해석한다.
 
 [출력 JSON]
 {{
@@ -483,6 +544,44 @@ FINAL_VERDICT_PROMPT = """당신은 한국 영화/드라마 산업의 시니어 
     "locked_distribution_priority": "1순위 유통 경로 1줄",
     "locked_risks_to_address": [
       "Creator Engine 진행 시 반드시 다뤄야 할 위험 요소 2~3개"
+    ],
+
+    "locked_core_decisions": [
+      {{
+        "category": "포맷 | 결말 | 음악 | 스타일 | 구조 | 톤 등",
+        "rule": "결정된 규칙 본문 1~2문장 — '~로 LOCK' 형태로 단호하게",
+        "rationale": "결정 근거 1문장 (선택)"
+      }}
+    ],
+
+    "locked_music_rules": {{
+      "기본 원칙": "음악 사용의 핵심 규칙 1~2문장",
+      "금지 사항": ["금지된 사용 방식 1", "금지된 사용 방식 2"],
+      "권장 사항": ["권장된 사용 방식 1", "권장된 사용 방식 2"],
+      "의도": "이 규약의 작품적 의의 1문장 (선택)"
+    }},
+
+    "locked_visual_motifs": [
+      {{
+        "motif": "모티프 이름·구체적 오브제",
+        "function": "모티프의 작품 내 기능 1문장",
+        "appearance_beats": []
+      }}
+    ],
+
+    "locked_ending_form": {{
+      "type": "헤어짐 | 결합 | 모호 | 희생 | 수용 | 폭로 등",
+      "emotional_resolution": "정서적 해소의 방식 1~2문장",
+      "final_image": "마지막 이미지·씬 권장 1문장 (선택)",
+      "forbidden": "금지 패턴 1문장 (선택) — '결합 금지', '재회 약속 금지' 등"
+    }},
+
+    "locked_creator_questions": [
+      {{
+        "question": "Creator Engine이 답해야 할 작품 본질 질문",
+        "options": ["후보 답안 1", "후보 답안 2"],
+        "importance": "high | medium | low"
+      }}
     ]
   }},
   "executive_summary": "BLUE JEANS PICTURES 임원 미팅용 최종 요약 - 4~6문장. 이 프로젝트를 한 페이지로 설명한다고 했을 때 들어가야 할 내용."
@@ -491,4 +590,9 @@ FINAL_VERDICT_PROMPT = """당신은 한국 영화/드라마 산업의 시니어 
 [중요]
 - final_verdict가 NOGO인 경우에도 locked_seed_package는 채운다 (참고용).
 - 단 이 경우 locked_risks_to_address에 NOGO 사유를 명시한다.
+- v1.1 신규 5개 키는 작품 특성상 해당 없어도 키를 생략하지 말 것. 빈 배열/빈 객체로 명시.
+- locked_core_decisions와 key_decisions_made는 의미상 같지만 형식이 다르다 — 둘 다 출력.
+- locked_creator_questions와 pending_decisions_for_creator도 마찬가지 — 둘 다 출력.
+- 자연어 배열(key_decisions_made/pending_decisions_for_creator)은 사용자 검토용,
+  구조화 객체(locked_core_decisions/locked_creator_questions)는 Creator Engine 흡수용.
 """ + SHARED_RULES

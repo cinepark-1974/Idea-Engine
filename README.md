@@ -1,141 +1,223 @@
-# 💡 Idea Engine v1.0
+# 💡 Idea Engine v2.0 + v1.1
 
-> **BLUE JEANS PICTURES · Creative Triage Engine**
+> **BLUE JEANS PICTURES · Creative Discovery & Triage Engine**
 >
-> Creator Engine 입구의 진단·판정 엔진
+> v2.0 HUNTER 트랙(아이디어 발굴) + v1.1 패치(Creator Engine v2.5.2 정합)
 >
-> 최종 업데이트: 2026-04-25
+> 최종 업데이트: 2026-05-05
 
 ---
 
-## 무엇인가
+## 무엇이 바뀌었는가
 
-Idea Engine은 **모호한 아이디어를 Creator Engine이 받아먹을 수 있는 LOCKED 시드 패키지로 변환**하는 진단 엔진입니다.
+이번 릴리스는 두 개의 변화를 동시에 담는다.
+
+**v2.0 — HUNTER 트랙 (아이디어 발굴)**
+HOME 진입 화면에서 HUNTER(발굴) / TRIAGE(진단) 두 트랙을 선택할 수 있다. HUNTER는 작가의 5가지 영감 유형(욕망·시대·트렌드·What if·사실)에 맞춘 사고 확장 엔진으로, 카탈로그 조립이 아니라 작가 안에 잠재된 답을 끌어내는 입구 시스템이다. 현재 골격(모드 분기 + 사이드바 전환 + 시드 인계 구조)이 완성되어 있으며, 5개 입구 페이지의 본 구현은 후속 사이클에 채운다.
+
+**v1.1 — Creator Engine v2.5.2 정합 (5개 신규 LOCKED 키)**
+「오랜만에」 검증에서 발견된 핵심 모티프 휘발(18개 중 11개, 61%) 문제를 시드 출력 단계에서 차단한다. Creator Engine v2.5.2가 직접 흡수하는 5개 신규 LOCKED 영역을 `locked_seed_package`에 명시 출력하도록 Stage 7 프롬프트와 시드 빌더를 확장했다.
+
+---
+
+## 모드 분기 구조 (v2.0)
 
 ```
-[모호한 아이디어]
-    ↓
-Idea Engine (Hook 진단 + Format 추천 + Reference 매핑 + Market 진단)
-    ↓
-[GO / CONDITIONAL / NOGO 판정] + [LOCKED 시드 JSON]
-    ↓
-Creator Engine ① 화면 → JSON 업로드 → 자동 입력
-    ↓
-Creator Engine ② Brainstorm 진행
+HOME (모드 선택)
+ ├─ HUNTER 트랙 (아이디어 발굴) ─→ 시드 자동 생성 ─┐
+ └─ TRIAGE 트랙 (7단계 진단·판정) ←──────────────┘
+                  │
+                  └─→ LOCKED 시드 JSON ─→ Creator Engine v2.5.2
 ```
 
-## 왜 만들었는가
+사이드바에서 언제든 모드 전환 가능. HUNTER에서 시드가 준비되면 사이드바에 "→ TRIAGE로 전송" 버튼이 노출되어 한 번에 인계된다.
 
-Creator Engine v1.2는 **어떤 입력이든 그럴듯한 기획서로 만들어버립니다**. 즉 나쁜 소재도 좋은 기획서로 포장됩니다.
+## 5개 입구 (HUNTER 트랙 — 후속 구현 예정)
 
-Idea Engine은 입구에 게이트를 두어:
-1. **나쁜 소재는 Creator Engine을 돌리지 않게 막음** (시간·비용 절약)
-2. **좋은 소재는 LOCKED 항목을 미리 확정**해서 Creator Engine 파이프라인의 드리프트 방지
-3. **외부 작가가 가져온 아이디어를 5분 안에 진단** (BLUE JEANS PICTURES IP 입수 게이트)
+| 입구 | 트리거 | 예시 |
+|---|---|---|
+| 1 | 욕망 | "로맨스 만들고 싶다" → 작가 안의 답을 캐묻는 질문 5개 |
+| 2 | 시대 | "IMF 때 이야기" → period_pack 10시대 활용 시점·공간·사건 |
+| 3 | 트렌드 | "회빙환 해야 하나" → 추종/변주/회피 3길 제시 |
+| 4 | What if | "로또+일주일 반복" → 가설 확장 + 함정 경고 + 톤 분기 |
+| 5 | 사실 | "1945.8.15. 일본인" → 역사 디테일 펼침 + 5시점 시드 |
+| 0 | 자유 텍스트 | 입력만 던지면 5개 입구 중 하나로 자동 분류 |
 
-## 7단계 파이프라인
+## v1.1 신규 LOCKED 키 5종
 
-| Stage | 단계 | 모델 | 설명 |
-|-------|------|------|------|
-| ① | 아이디어 입력 | - | 1줄~1단락 자유 텍스트 |
-| ② | 로그라인 정제 | Sonnet 4.6 | 산업 표준 로그라인 3개 변형 + 추천 |
-| ③ | Hook 진단 (Gate 0) | Sonnet 4.6 | 5축 채점 (구체성/갈등/장르/판돈/독창성) |
-| ④ | Format 추천 | Sonnet 4.6 | 영화/시리즈/미니/숏폼/소설 5개 적합도 |
-| ⑤ | Reference 매핑 | Sonnet 4.6 | 유사작 5편 + 차별점 + 치명적 유사작 경고 |
-| ⑥ | Market 진단 | Sonnet 4.6 | 한국·글로벌·OTT 3개 시장 별점 평가 |
-| ⑦ | **최종 판정** | **Opus 4.7** | GO/CONDITIONAL/NOGO + LOCKED 시드 패키지 |
-| ⑧ | Export | - | DOCX 보고서 + JSON 시드 |
+| 키 | 용도 | 빈 값 |
+|---|---|---|
+| `locked_core_decisions` | 포맷·결말·음악·스타일 작품 본질 LOCK | `[]` |
+| `locked_music_rules` | 음악·노래·OST 사용 규약 (장르 특화) | `{}` |
+| `locked_visual_motifs` | 두 타임라인·두 세계 연결 시각 오브제 | `[]` |
+| `locked_ending_form` | 결말 형식의 본질 (헤어짐·결합·모호 등) | `{}` |
+| `locked_creator_questions` | Creator Engine이 답해야 할 미해결 질문 | `[]` |
 
-### 듀얼 모델 정책
+각 키의 필드명·타입은 Creator Engine v2.5.2 main.py(line 3777~3860)와 1:1 정합된다.
 
-- **진단 (②~⑥)**: Sonnet 4.6 — 빠르고 저렴 (입구 게이트)
-- **최종 판정 (⑦)**: Opus 4.7 — 6개 진단을 종합한 최종 결정은 가장 정확한 모델로
+### 빈 값 처리 원칙
+
+작품 특성상 적용되지 않는 키는 **키 자체를 생략하지 않고** 빈 배열/빈 객체로 명시 출력한다. 이는 Creator Engine 측에 "Idea Engine이 의식적으로 비웠다"는 신호로 해석되어, 누락 디버깅과 fallback 작동에 유리하다.
+
+## 「오랜만에」 케이스 효과 예측
+
+| 측정 지점 | v1.0 + Creator v2.5.1 | v1.1 + Creator v2.5.2 |
+|---|---|---|
+| LOCKED 등록 라인 수 | 약 11라인 | 약 34라인 (+23) |
+| 핵심 모티프 휘발률 | 약 61% | ≤ 10% (차단) |
+| 음악 규약 위반 | 발생 가능 | 차단 (노래방·LP 코스프레 등) |
+| 시각 모티프 누락 | 발생 가능 | 차단 (중정·수강증·통화연결음) |
+| 결말 형식 약화 | 발생 가능 | 차단 (헤어짐 + 수용 LOCK) |
+| Rewrite 점수 (예상) | 7.1점 | 7.7~8.0점 |
+
+## 7단계 파이프라인 (TRIAGE 트랙)
+
+| Stage | 단계 | 모델 | 비고 |
+|---|---|---|---|
+| ① | 아이디어 입력 | — | HUNTER 시드 자동 입력 가능 |
+| ② | 로그라인 정제 | Sonnet 4.6 | |
+| ③ | Hook 진단 (Gate 0) | Sonnet 4.6 | 5축 채점 |
+| ④ | Format 추천 | Sonnet 4.6 | 영화/시리즈/미니/숏폼/소설 |
+| ⑤ | Reference 매핑 | Sonnet 4.6 | 치명적 유사작 경고 |
+| ⑥ | Market 진단 | Sonnet 4.6 | 한국·글로벌·OTT 별점 |
+| ⑦ | **최종 판정** | **Opus 4.7** | GO/CONDITIONAL/NOGO + LOCKED 시드 (v1.1 5키 포함) |
+| ⑧ | Export | — | DOCX 보고서 + JSON 시드 |
 
 ## Gate 0 통과 기준
 
-Hook Score 5축 × 10점 = **50점 만점**
+Hook Score 5축 × 10점 = 50점 만점
 
 | 점수대 | 판정 |
-|--------|------|
+|---|---|
 | 45~50 | 🟢 즉시 GO (희귀) |
 | 35~44 | 🟢 GO (대다수의 좋은 기획) |
 | 25~34 | 🟡 CONDITIONAL (조건부 진행) |
 | 0~24 | 🔴 NOGO (재고 권장) |
 
-Override 버튼으로 강제 진행 가능.
-
 ## 산출물
 
 ### 1. 진단 보고서 DOCX
-- 노란 하이라이트 섹션 헤더 + 한글/ENGLISH 병기 (Creator Engine과 동일 디자인)
+
 - 7단계 모든 진단 결과
-- LOCKED 시드 패키지 본문 포함
+- LOCKED 시드 패키지 본문
+- **v1.1 신규 5개 LOCKED 영역 섹션**
 - 파일명: `IdeaDiagnostic_{제목}_{날짜}.docx`
 
-### 2. LOCKED 시드 JSON
-- Creator Engine ① 화면 자동 입력용
-- 다음 6개 LOCKED 항목 확정:
-  - `locked_logline`
-  - `locked_genre` (primary/secondary/tertiary)
-  - `locked_format` (primary/episode_count/runtime/ip_strategy)
-  - `locked_target` (domestic/global)
-  - `locked_theme` (surface/deep)
-  - `locked_references`
-- 파일명: `IdeaSeed_{project_id}_{날짜}.json`
+### 2. LOCKED 시드 JSON (v1.1)
+
+기존 v1.0 13개 키 + 신규 5개 키 = 총 18개 키. Creator Engine v2.5.2가 그대로 흡수.
+
+```json
+{
+  "_idea_engine_meta": {
+    "version": "v2.0",
+    "patch": "v1.1 (Creator Engine v2.5.2 정합 5키)",
+    ...
+  },
+  "locked_seed": {
+    // 기존 v1.0 키 (13개)
+    "locked_logline": "...",
+    "locked_genre": { "primary": "...", "secondary": "...", "tertiary": "..." },
+    "locked_format": { ... },
+    "locked_target": { "domestic": "...", "global": "..." },
+    "locked_theme": { ... },
+    "locked_references": [ ... ],
+    "locked_hook_score": 40,
+    "locked_market_stars": { ... },
+    "locked_distribution_priority": "...",
+    "locked_risks_to_address": [ ... ],
+
+    // v1.1 신규 키 (5개)
+    "locked_core_decisions": [
+      { "category": "포맷", "rule": "장편 극영화 LOCK...", "rationale": "..." }
+    ],
+    "locked_music_rules": {
+      "기본 원칙": "...",
+      "금지 사항": [ ... ],
+      "권장 사항": [ ... ],
+      "의도": "..."
+    },
+    "locked_visual_motifs": [
+      { "motif": "건물의 중정 구조", "function": "두 타임라인 연결핀..." }
+    ],
+    "locked_ending_form": {
+      "type": "헤어짐 + 각자의 수용",
+      "emotional_resolution": "...",
+      "final_image": "...",
+      "forbidden": "결합·재결합 금지"
+    },
+    "locked_creator_questions": [
+      {
+        "question": "노트 발견 씬의 정확한 위치",
+        "options": ["2막 후반", "3막 진입점"],
+        "importance": "high"
+      }
+    ]
+  }
+}
+```
 
 ## Creator Engine 연동
 
-Creator Engine ① 화면 상단에 **"Idea Engine JSON 업로드"** 버튼이 추가됩니다 (Creator Engine 별도 패치 필요).
+Creator Engine ① 화면 상단의 "Idea Engine JSON 업로드" 버튼으로 위 JSON을 업로드하면, v2.5.2 흡수 로직이 18개 키 전부를 `locked_seed`에 등록한다. 신규 5개 영역은 Creator Engine 모든 단계(Brainstorm/Core/Character/Structure/Treatment)에서 작품 본질로 절대 보존된다.
 
-업로드 시 다음이 자동으로 채워집니다:
-- 제목
-- 원본 아이디어 (LOCKED 로그라인으로 채워짐)
-- 장르 (LOCKED genre.primary)
-- 타겟 시장 (LOCKED target.domestic)
-- 포맷 (LOCKED format.primary)
+### 하위 호환성
 
-또한 `locked_seed` 데이터가 Creator Engine session_state에 저장되어, 이후 Stage들에서 이 LOCKED 항목들을 변경하지 않습니다.
+- v1.0 시드(13키만)도 Creator Engine v2.5.2가 fallback으로 정상 흡수
+- 기존 프로젝트 100% 호환
+- 신규 5개 키 중 일부만 출력해도 부분 추출 동작
 
-## 설치 및 실행
+## 듀얼 모델 정책
 
-### 로컬
+- 진단 (②~⑥): **Sonnet 4.6** — 빠르고 저렴 (입구 게이트)
+- 최종 판정 (⑦): **Opus 4.7** — 6개 진단 종합 + v1.1 신규 5개 영역 산출
+- HUNTER 발굴 (예정): **Sonnet 4.6**
 
-```bash
-pip install -r requirements.txt
-streamlit run main.py
-```
-
-### Streamlit Cloud
-
-1. GitHub repo에 푸시
-2. Streamlit Cloud에서 새 앱 생성
-3. Secrets에 `ANTHROPIC_API_KEY` 추가
-
-## 디자인 시스템 (Creator Engine과 100% 동일)
+## 디자인 시스템
 
 | 요소 | 값 |
-|------|---|
+|---|---|
 | Primary | `#FFCB05` (BLUE JEANS Yellow) |
 | Background | `#F7F7F5` |
 | Text | `#1A1A2E` |
 | Navy | `#191970` |
 | Display Font | Playfair Display |
-| Body Font | Noto Sans KR |
-| 섹션 헤더 | 노란 하이라이트 + 한글/ENGLISH 병기 |
+| Body Font | Pretendard / Noto Sans KR |
+
+Writer Engine v3.1 디자인 시스템 100% 동일.
+
+## 설치 및 실행
+
+```bash
+streamlit run main.py
+```
+
+Streamlit Cloud Secrets에 `ANTHROPIC_API_KEY` 추가 필수.
 
 ## 사용 케이스
 
-### Case 1 — 본인 아이디어 스크리닝 (선택)
+### Case 1 — 본인 아이디어 스크리닝
 
-대표님 머릿속 50개 아이디어 → Idea Engine 통과 → 35점 이상만 Creator Engine으로
+머릿속 아이디어 → TRIAGE 트랙 → 35점 이상만 Creator Engine으로
 
-### Case 2 — 외부 작가 입구 게이트 (필수)
+### Case 2 — 외부 작가 입구 게이트
 
-신인 작가가 가져온 아이디어 → 5분 진단 → "받을 만한 소재인가" 판정
+신인 작가 아이디어 → 5분 진단 → "받을 만한 소재인가" 판정
 
-### Case 3 — 이미 확정된 IP (불필요)
+### Case 3 — 발굴부터 시작 (HUNTER 트랙, 예정)
 
-〈물귀신〉, 〈왕게임〉 같이 이미 LOCKED가 확정된 IP는 Idea Engine을 거치지 않고 Creator Engine에 바로 입력 가능. **Idea Engine은 필수 게이트가 아닙니다.**
+머릿속에 아무것도 없을 때 → HUNTER 5개 입구 → 시드 발굴 → TRIAGE 인계 → Creator Engine
+
+### Case 4 — 이미 확정된 IP
+
+「물귀신」, 「왕게임」 같이 이미 LOCKED가 확정된 IP는 Idea Engine을 거치지 않고 Creator Engine에 바로 입력 가능.
+
+## 버전 이력
+
+| 버전 | 변경 사항 |
+|---|---|
+| v2.0 + v1.1 (2026-05-05) | HUNTER 트랙 골격 + Creator v2.5.2 정합 5개 LOCKED 키 출력 |
+| v1.0 (2026-04-25) | TRIAGE 트랙 7단계 완성. 「만물탐정」(34/50) · 「오랜만에」(40/50) 검증 |
 
 ## 라이선스
 
