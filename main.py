@@ -160,6 +160,134 @@ def transfer_hunter_seed_to_triage():
     return True
 
 
+# ═══════════════════════════════════════════════════════════
+# 진행 상태 JSON 저장·복원 (TRIAGE 중간 백업)
+# 각 Stage 완료 후 다운로드, Stage 1 진입 시 업로드 복원
+# ═══════════════════════════════════════════════════════════
+
+PROGRESS_STAGE_KEYS = [
+    "stage_1_input", "stage_2_logline", "stage_3_hook", "stage_4_format",
+    "stage_5_reference", "stage_6_market", "stage_7_verdict", "selected_logline",
+]
+PROGRESS_SCHEMA = "triage_progress_v1"
+
+
+def _detect_last_completed_stage() -> int:
+    """마지막 완료 Stage 번호 (0=없음)."""
+    pairs = [
+        (1, "stage_1_input"), (2, "stage_2_logline"), (3, "stage_3_hook"),
+        (4, "stage_4_format"), (5, "stage_5_reference"), (6, "stage_6_market"),
+        (7, "stage_7_verdict"),
+    ]
+    last = 0
+    for n, k in pairs:
+        if st.session_state.get(k):
+            last = n
+        else:
+            break
+    return last
+
+
+def build_progress_json(state: Dict[str, Any]) -> str:
+    """현재 TRIAGE 진행 상태를 JSON 문자열로 직렬화."""
+    last = _detect_last_completed_stage()
+    title = ""
+    s1 = state.get("stage_1_input")
+    if isinstance(s1, dict):
+        title = s1.get("title", "")
+    progress = {
+        "_idea_engine_progress": {
+            "version": ENGINE_VERSION,
+            "build_date": ENGINE_BUILD_DATE,
+            "saved_at": datetime.now().isoformat(),
+            "last_completed_stage": last,
+            "project_title": title,
+            "schema": PROGRESS_SCHEMA,
+        },
+    }
+    for k in PROGRESS_STAGE_KEYS:
+        progress[k] = state.get(k)
+    # HUNTER 인계 이력 보존
+    progress["_hunter_trace"] = {
+        "seed_loaded_from_hunter": state.get("seed_loaded_from_hunter", False),
+        "hunter_output": state.get("hunter_output"),
+    }
+    return json.dumps(progress, ensure_ascii=False, indent=2)
+
+
+def load_progress_json(uploaded_dict: Dict[str, Any]) -> tuple:
+    """업로드 JSON을 session_state에 복원. (success, message, last_stage)."""
+    meta = uploaded_dict.get("_idea_engine_progress", {})
+    if meta.get("schema") != PROGRESS_SCHEMA:
+        return False, f"호환 안 됨 (필요: {PROGRESS_SCHEMA})", 0
+    last = meta.get("last_completed_stage", 0)
+    if not isinstance(last, int) or last < 1:
+        return False, "유효하지 않은 last_completed_stage", 0
+    for k in PROGRESS_STAGE_KEYS:
+        if k in uploaded_dict:
+            st.session_state[k] = uploaded_dict[k]
+    htr = uploaded_dict.get("_hunter_trace", {})
+    if isinstance(htr, dict):
+        st.session_state["seed_loaded_from_hunter"] = htr.get("seed_loaded_from_hunter", False)
+        if htr.get("hunter_output"):
+            st.session_state["hunter_output"] = htr["hunter_output"]
+    next_stage = min(last + 1, 7) if last < 7 else 7
+    st.session_state["current_stage"] = next_stage
+    st.session_state["mode"] = "TRIAGE"
+    title = meta.get("project_title", "(제목 없음)")
+    saved = meta.get("saved_at", "")
+    return True, f"✓ '{title}' 복원 완료 — Stage {last}까지 완료. Stage {next_stage}부터 진행. (저장: {saved})", last
+
+
+def render_progress_save_button(stage_num: int):
+    """진행 상태 JSON 다운로드 버튼 (각 Stage 완료 페이지에 호출)."""
+    state = dict(st.session_state)
+    last = _detect_last_completed_stage()
+    if last < 1:
+        return
+    title = ""
+    s1 = state.get("stage_1_input")
+    if isinstance(s1, dict):
+        title = s1.get("title", "untitled").replace(" ", "_").replace("/", "_")[:40]
+    json_str = build_progress_json(state)
+    filename = f"IdeaProgress_{title}_stage{last}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    st.download_button(
+        label=f"💾 진행 상태 백업 (Stage {last}까지) — JSON 다운로드",
+        data=json_str.encode("utf-8"),
+        file_name=filename,
+        mime="application/json",
+        key=f"progress_save_stage_{stage_num}",
+        use_container_width=True,
+        help="Stage 7 진단 전 백업 권장. 에러 발생 시 이 파일로 복원 가능.",
+    )
+
+
+def render_progress_load_widget():
+    """진행 상태 JSON 업로드 위젯 (Stage 1 상단에 호출)."""
+    with st.expander("📂 이전 진행 상태 JSON 복원하기", expanded=False):
+        st.caption("이전에 백업한 IdeaProgress_*.json 파일을 업로드하면 그 단계로 복원됩니다.")
+        uploaded = st.file_uploader(
+            "JSON 파일 업로드",
+            type=["json"],
+            key="progress_load_uploader",
+            label_visibility="collapsed",
+        )
+        if uploaded is not None:
+            try:
+                data = json.load(uploaded)
+                if st.button("→ 이 JSON으로 복원", key="progress_load_btn", type="primary", use_container_width=True):
+                    ok, msg, last = load_progress_json(data)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            except json.JSONDecodeError as e:
+                st.error(f"JSON 파싱 실패: {e}")
+            except Exception as e:
+                st.error(f"복원 실패: {type(e).__name__}: {e}")
+
+
 init_session_state()
 
 # ─────────────────────────────────────
@@ -223,6 +351,33 @@ with st.sidebar:
             transfer_hunter_seed_to_triage()
             st.session_state["mode"] = "TRIAGE"
             st.rerun()
+
+    # ── TRIAGE 진행 중 백업 (Stage 1 이상 데이터가 있을 때만) ──
+    if _detect_last_completed_stage() >= 1:
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        last_stage_num = _detect_last_completed_stage()
+        st.markdown(f"""
+        <div style="padding:8px 10px;background:#E8F5E9;border-radius:6px;font-family:'Pretendard',sans-serif;font-size:.75rem;color:#1B5E20;font-weight:700;">
+            💾 진행 중 (Stage {last_stage_num} 완료)
+        </div>
+        """, unsafe_allow_html=True)
+        # 사이드바용 작은 버튼
+        _state_for_sidebar = dict(st.session_state)
+        _title_for_sidebar = ""
+        _s1 = _state_for_sidebar.get("stage_1_input")
+        if isinstance(_s1, dict):
+            _title_for_sidebar = _s1.get("title", "untitled").replace(" ", "_").replace("/", "_")[:30]
+        _sb_json = build_progress_json(_state_for_sidebar)
+        _sb_filename = f"IdeaProgress_{_title_for_sidebar}_stage{last_stage_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        st.download_button(
+            label="💾 백업 JSON 다운로드",
+            data=_sb_json.encode("utf-8"),
+            file_name=_sb_filename,
+            mime="application/json",
+            key="sidebar_progress_save",
+            use_container_width=True,
+            help="현재까지 진행한 모든 Stage 데이터를 JSON으로 저장",
+        )
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
@@ -1121,7 +1276,10 @@ def small_meta(text: str):
 def page_stage_1():
     section_header("📥 STEP 1 · 아이디어 입력", "FROM RAW IDEA")
     small_meta("모호한 아이디어 한 줄부터 한 단락까지 자유롭게 입력하세요. Idea Engine이 정제하여 Creator Engine이 받아먹을 수 있는 LOCKED 시드 패키지로 변환합니다.")
-    
+
+    # ── 이전 진행 상태 JSON 복원 위젯 ──
+    render_progress_load_widget()
+
     with st.form("s1"):
         c1, c2 = st.columns([2, 1])
         with c1:
@@ -1248,6 +1406,10 @@ def page_stage_2():
                 st.session_state["current_stage"] = 3
                 st.rerun()
 
+        # ── 진행 상태 백업 ──
+        st.markdown("---")
+        render_progress_save_button(stage_num=2)
+
 
 def page_stage_3():
     section_header("🎯 STEP 3 · 후크 진단", "GATE 0 · 5-AXIS SCORING")
@@ -1368,6 +1530,10 @@ def page_stage_3():
                     st.session_state["current_stage"] = 4
                     st.rerun()
 
+        # ── 진행 상태 백업 ──
+        st.markdown("---")
+        render_progress_save_button(stage_num=3)
+
 
 def page_stage_4():
     section_header("📐 STEP 4 · 포맷 추천", "5 FORMAT FIT")
@@ -1448,6 +1614,10 @@ def page_stage_4():
                 st.session_state["current_stage"] = 5
                 st.rerun()
 
+        # ── 진행 상태 백업 ──
+        st.markdown("---")
+        render_progress_save_button(stage_num=4)
+
 
 def page_stage_5():
     section_header("🔍 STEP 5 · 레퍼런스 매핑", "SIMILAR 5 + DIFFERENTIATION")
@@ -1507,6 +1677,10 @@ def page_stage_5():
             if st.button("Market 진단으로 →", type="primary", use_container_width=True):
                 st.session_state["current_stage"] = 6
                 st.rerun()
+
+        # ── 진행 상태 백업 ──
+        st.markdown("---")
+        render_progress_save_button(stage_num=5)
 
 
 def page_stage_6():
@@ -1601,6 +1775,11 @@ def page_stage_6():
             if st.button("최종 판정으로 → (Opus)", type="primary", use_container_width=True):
                 st.session_state["current_stage"] = 7
                 st.rerun()
+
+        # ── 진행 상태 백업 (Stage 7 직전이라 매우 권장) ──
+        st.markdown("---")
+        st.warning("⚠ Stage 7(Opus 최종 판정) 진행 전 백업을 강력히 권장합니다. 에러 발생 시 이 JSON으로 1~6단계 복원 가능.")
+        render_progress_save_button(stage_num=6)
 
 
 def page_stage_7():
@@ -1906,6 +2085,11 @@ def page_stage_7():
         with st.expander("JSON 미리보기"):
             st.code(json_str, language="json")
         
+        # ── 진행 상태 전체 백업 (Stage 1~7 통째 JSON) ──
+        with st.expander("💾 전체 진행 상태 백업 (Stage 1~7 JSON)", expanded=False):
+            st.caption("전체 진단 데이터를 JSON으로 보존. 디버깅·재현·아카이브용.")
+            render_progress_save_button(stage_num=7)
+        
         st.markdown("---")
         cb, cr = st.columns([1, 1])
         with cb:
@@ -1993,44 +2177,1181 @@ def page_home():
 # v2.0 — HUNTER PAGES (골격 — 2~4단계에서 채움)
 # ═══════════════════════════════════════════════════════════
 def page_hunter_select():
-    """입구 선택 화면. 입구 0 자유 텍스트 + 입구 1~5 카드."""
+    """입구 선택 화면 — 입구 0 자유 텍스트 + 입구 1~5 카드."""
     section_header("🎯 HUNTER · 입구 선택", "CHOOSE YOUR ENTRY")
     small_meta(
         "5개 입구 중 하나로 들어가시거나, 입구 0에 자유롭게 입력하시면 자동 분류됩니다. "
         "각 입구는 작가의 영감 유형에 맞춘 사고 확장 엔진입니다."
     )
 
-    st.info("🚧 **2단계 작업 예정** — 입구 0 자유 텍스트 입력 + 입구 1~5 선택 카드 UI를 다음 단계에서 구현합니다.")
+    # ── 입구 0 — 자유 텍스트 ──
+    st.markdown("### 🔮 입구 0 — 자유 텍스트 (자동 분류)")
+    st.caption("어느 입구로 갈지 모르겠으면, 머릿속에 떠오른 그대로 입력하세요. 자동으로 분류됩니다.")
 
-    # 임시 디버그 (개발 중 모드 확인용)
+    with st.form("hunter_entry_0_form", clear_on_submit=False):
+        free_text = st.text_area(
+            "자유 입력",
+            value=st.session_state.get("hunter_input", ""),
+            height=100,
+            placeholder="예: 로맨스 만들고 싶다 / IMF 때 이야기 / 회빙환 해야 하나 / 로또+일주일 루프 / 1945.8.15 일본인",
+        )
+        submitted = st.form_submit_button("🔮 자동 분류 실행", type="primary", use_container_width=True)
+
+    if submitted and free_text.strip():
+        st.session_state["hunter_input"] = free_text.strip()
+        client = get_anthropic_client()
+        with st.spinner("Sonnet이 입력을 분석해 적합한 입구로 분류 중... (10~20초)"):
+            prompt_text = P.HUNTER_ENTRY_0_PROMPT.format(free_text=free_text.strip())
+            result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+            if result.get("_parse_error"):
+                st.error("응답 파싱 실패")
+                with st.expander("Raw 응답"):
+                    st.text(result.get("_raw", ""))
+            else:
+                st.session_state["hunter_classified"] = result
+                st.rerun()
+
+    # ── 자동 분류 결과 표시 ──
+    classified = st.session_state.get("hunter_classified")
+    if classified:
+        st.markdown("---")
+        st.markdown("### 🎯 자동 분류 결과")
+        primary = classified.get("primary_entry", {})
+        secondary = classified.get("secondary_entry", {})
+
+        st.markdown(f"""
+        <div class="callout">
+        <b>1순위:</b> 입구 {primary.get('entry_id', '?')} — {primary.get('entry_name', '')}
+        (확신도 {primary.get('confidence', 0)}%)<br>
+        <i>{primary.get('reasoning', '')}</i>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if secondary.get("entry_id"):
+            st.caption(f"2순위: 입구 {secondary['entry_id']} — {secondary.get('entry_name', '')}: {secondary.get('reasoning', '')}")
+
+        st.markdown(f"**입력 재진술**: {classified.get('restated_input', '')}")
+
+        first_qs = classified.get("first_questions", [])
+        if first_qs:
+            st.markdown("**1차 사고 확장 질문 (다음 입구에서 답하실 것):**")
+            for q in first_qs:
+                st.markdown(f"- {q}")
+
+        col_go, col_alt = st.columns(2)
+        with col_go:
+            if st.button(f"→ 입구 {primary.get('entry_id', '1')}로 진입", key="goto_primary", type="primary", use_container_width=True):
+                st.session_state["hunter_entry"] = str(primary.get("entry_id", "1"))
+                st.rerun()
+        with col_alt:
+            if secondary.get("entry_id"):
+                if st.button(f"→ 입구 {secondary['entry_id']}로 진입 (2순위)", key="goto_secondary", use_container_width=True):
+                    st.session_state["hunter_entry"] = str(secondary["entry_id"])
+                    st.rerun()
+
+    # ── 입구 1~5 직접 카드 ──
+    st.markdown("---")
+    st.markdown("### 🚪 입구를 직접 선택")
+    st.caption("어느 입구에 들어갈지 명확하면 아래에서 직접 선택하세요.")
+
+    entries_meta = [
+        ("1", "결핍·상실", "LACK & LOSS", "💔",
+         "'~을 만들고 싶다'는 갈망에서 출발. BJND 진단으로 결핍/상실 본질 판별."),
+        ("2", "시대", "PERIOD", "🕰️",
+         "특정 시대(IMF·1990년대 등)에 끌릴 때. 시대 진단 + 디테일 펼침."),
+        ("3", "트렌드", "TREND", "📈",
+         "현재 시장 트렌드(회빙환·숏폼 등) 추종/변주/회피 결정."),
+        ("4", "What if", "HYPOTHESIS", "❓",
+         "'만약 ~라면?' 가설 확장 + 4대 함정 경고 + 톤 3분기."),
+        ("5", "사실", "FACT", "📜",
+         "구체적 역사·실화·뉴스 작품화. 5시점 발굴."),
+    ]
+
+    cols = st.columns(5)
+    for i, (eid, kr, en, emoji, desc) in enumerate(entries_meta):
+        with cols[i]:
+            st.markdown(f"""
+            <div style="border:1.5px solid #E2E2E0;border-radius:12px;padding:14px 12px;background:#fff;min-height:200px;">
+                <div style="font-size:1.8rem;text-align:center;margin-bottom:6px;">{emoji}</div>
+                <div style="font-family:'Playfair Display',serif;font-size:.9rem;font-weight:700;color:#191970;text-align:center;margin-bottom:4px;">입구 {eid}</div>
+                <div style="font-size:1rem;font-weight:700;color:#1A1A2E;text-align:center;margin-bottom:6px;">{kr}</div>
+                <div style="font-size:.65rem;color:#999;text-align:center;letter-spacing:.05em;margin-bottom:10px;">{en}</div>
+                <div style="font-size:.72rem;color:#555;line-height:1.4;">{desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            if st.button(f"입구 {eid} 진입", key=f"direct_entry_{eid}", use_container_width=True):
+                st.session_state["hunter_entry"] = eid
+                st.rerun()
+
+    # ── 개발자 디버그 ──
     with st.expander("개발자: 현재 HUNTER 상태", expanded=False):
         st.json({
             "mode": st.session_state.get("mode"),
             "hunter_entry": st.session_state.get("hunter_entry"),
             "hunter_input": st.session_state.get("hunter_input"),
+            "hunter_classified": st.session_state.get("hunter_classified"),
+            "hunter_stage_data_keys": list((st.session_state.get("hunter_stage_data") or {}).keys()),
             "hunter_output": st.session_state.get("hunter_output"),
         })
 
 
-def page_hunter_entry(entry_id: str):
-    """입구별 페이지 (1~5). 3단계에서 prompt.py 추가 후 4단계에서 본격 구현."""
-    entry_titles = {
-        "1": ("욕망 트리거", "DESIRE PROMPT"),
-        "2": ("시대 트리거", "PERIOD PROMPT"),
-        "3": ("트렌드 협상", "TREND NEGOTIATION"),
-        "4": ("What if 확장", "HYPOTHESIS EXPANSION"),
-        "5": ("사실 발굴", "FACT EXCAVATION"),
-    }
-    kr, en = entry_titles.get(entry_id, ("입구", "ENTRY"))
-    section_header(f"🎯 HUNTER · 입구 {entry_id} — {kr}", en)
+def _hunter_render_questions(questions, key_prefix, intro_text=None):
+    """공통 질문 렌더링 헬퍼. 5개 질문 + 보조 옵션 + 답변 입력."""
+    if intro_text:
+        st.markdown(f'<div class="callout">{intro_text}</div>', unsafe_allow_html=True)
 
-    st.info(f"🚧 **4단계 작업 예정** — 입구 {entry_id}({kr}) 페이지 구현은 prompt.py 작성(3단계) 이후 진행됩니다.")
+    answers = {}
+    for q in questions:
+        qid = q.get("q_id", 0)
+        st.markdown(f"**Q{qid}. {q.get('question', '')}**")
+        principle = q.get("principle", "")
+        if principle:
+            st.caption(f"원칙: {principle}")
 
+        hints = q.get("hint_options", []) or []
+        if hints:
+            st.caption("보조 옵션: " + " · ".join(hints))
+
+        answer = st.text_area(
+            f"답변 {qid}",
+            key=f"{key_prefix}_q{qid}",
+            height=80,
+            label_visibility="collapsed",
+            placeholder="자유롭게 작성하시거나, 보조 옵션 중 하나를 선택해서 살을 붙이세요.",
+        )
+        answers[f"q{qid}"] = answer
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    return answers
+
+
+def _hunter_render_seed_cards(seeds, bjnd_essence=None, period_essence=None):
+    """시드 후보 카드 렌더링 + 선택 버튼."""
+    selected_seed = None
+
+    for s in seeds:
+        sid = s.get("seed_id", "")
+        slabel = s.get("seed_label", "")
+        title = s.get("title", "")
+        genre = s.get("genre", "")
+        target = s.get("target_market", "")
+        fmt = s.get("format", "")
+        raw_idea = s.get("raw_idea", "")
+        diff = s.get("differentiation", "")
+        bjnd_label = s.get("bjnd_label", "") or s.get("period_bjnd_label", "")
+
+        with st.container():
+            st.markdown(f"""
+            <div style="border:2px solid #FFCB05;border-radius:14px;padding:18px;background:#FFFEF5;margin-bottom:14px;">
+                <div style="display:inline-block;background:#191970;color:#FFCB05;font-size:.7rem;font-weight:700;padding:3px 10px;border-radius:999px;">시드 {sid} · {slabel}</div>
+                <div style="font-family:'Playfair Display',serif;font-size:1.3rem;font-weight:700;color:#191970;margin-top:8px;">{title}</div>
+                <div style="font-size:.85rem;color:#666;margin-top:4px;">
+                    <b>장르</b>: {genre} · <b>포맷</b>: {fmt}<br>
+                    <b>타겟</b>: {target}
+                </div>
+                {f'<div style="font-size:.75rem;color:#191970;font-weight:600;margin-top:6px;">{bjnd_label}</div>' if bjnd_label else ''}
+                <div style="margin-top:10px;padding:10px;background:white;border-radius:8px;font-size:.88rem;line-height:1.6;color:#1A1A2E;">{raw_idea}</div>
+                <div style="font-size:.78rem;color:#555;margin-top:8px;font-style:italic;">{diff}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button(f"→ 시드 {sid} 선택해서 TRIAGE로 전송", key=f"select_seed_{sid}", use_container_width=True, type="primary"):
+                # HUNTER 시드 → TRIAGE 인계 형식으로 변환
+                st.session_state["hunter_output"] = {
+                    "title": title,
+                    "genre": genre,
+                    "target_market": target,
+                    "format_pref": fmt,
+                    "raw_idea": raw_idea,
+                    "hunter_meta": {
+                        "entry": st.session_state.get("hunter_entry", ""),
+                        "seed_id": sid,
+                        "seed_label": slabel,
+                        "bjnd_label": bjnd_label,
+                        "bjnd_essence": bjnd_essence,
+                        "period_essence": period_essence,
+                        "differentiation": diff,
+                    },
+                }
+                transfer_hunter_seed_to_triage()
+                st.session_state["mode"] = "TRIAGE"
+                st.rerun()
+
+
+def _hunter_back_button(entry_id):
+    """입구 선택으로 돌아가기 버튼."""
     col_back, _ = st.columns([1, 4])
     with col_back:
         if st.button("← 입구 선택으로", key=f"hunter_back_{entry_id}", use_container_width=True):
             st.session_state["hunter_entry"] = None
+            # 진행 중 데이터는 보존 (작가가 다시 들어올 수 있도록)
             st.rerun()
+
+
+def _hunter_reset_button(entry_id):
+    """현재 입구 진행 데이터 초기화 버튼."""
+    if st.button("🔄 이 입구 처음부터 다시", key=f"hunter_reset_{entry_id}", use_container_width=True):
+        # 현재 입구 진행 데이터만 삭제
+        stage_data = st.session_state.get("hunter_stage_data", {})
+        for k in list(stage_data.keys()):
+            if k.startswith(f"entry{entry_id}_"):
+                del stage_data[k]
+        st.session_state["hunter_stage_data"] = stage_data
+        st.rerun()
+
+
+def page_hunter_entry(entry_id: str):
+    """입구별 페이지 — 입구 1~5 본 구현."""
+    entry_titles = {
+        "1": ("결핍·상실", "LACK & LOSS"),
+        "2": ("시대", "PERIOD"),
+        "3": ("트렌드", "TREND"),
+        "4": ("What if", "HYPOTHESIS"),
+        "5": ("사실", "FACT"),
+    }
+    kr, en = entry_titles.get(entry_id, ("입구", "ENTRY"))
+    section_header(f"🎯 HUNTER · 입구 {entry_id} — {kr}", en)
+
+    # 입구별 라우팅
+    if entry_id == "1":
+        _hunter_entry_1_lack_loss()
+    elif entry_id == "2":
+        _hunter_entry_2_period()
+    elif entry_id == "3":
+        _hunter_entry_3_trend()
+    elif entry_id == "4":
+        _hunter_entry_4_whatif()
+    elif entry_id == "5":
+        _hunter_entry_5_fact()
+    else:
+        st.warning(f"알 수 없는 입구: {entry_id}")
+        _hunter_back_button(entry_id)
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 1 — 결핍·상실 (3턴: 진단 → 정밀 확장 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_1_lack_loss():
+    small_meta(
+        "BJND 진단(결핍 vs 상실) → 정밀 사고 확장 → 시드 후보 3개의 3턴 구조입니다. "
+        "같은 표면 갈망도 결핍/상실 발생 근원에 따라 완전히 다른 작품이 됩니다."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # ── 턴 1: 입력 받기 ──
+    desire_input = stage_data.get("entry1_desire_input", "")
+    if not desire_input:
+        # 입구 0에서 자동 분류된 입력이 있으면 가져오기
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 1:
+            desire_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 작품을 향한 갈망을 입력하세요")
+        with st.form("entry1_desire_form"):
+            desire = st.text_area(
+                "어떤 작품을 만들고 싶으신가요?",
+                value=desire_input,
+                height=100,
+                placeholder="예: 로맨스 만들고 싶다 / 복수극이 끌려 / 감동적인 가족 드라마 / 미스터리 스릴러",
+            )
+            submitted = st.form_submit_button("→ BJND 진단 시작", type="primary", use_container_width=True)
+
+        if submitted and desire.strip():
+            stage_data["entry1_desire_input"] = desire.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+
+        _hunter_back_button("1")
+        return
+
+    # 입력 표시
+    st.markdown(f"**작가의 갈망:** _{desire_input}_")
+    st.markdown("---")
+
+    # ── 턴 2: BJND 진단 질문 ──
+    diagnosis = stage_data.get("entry1_diagnosis")
+    if not diagnosis:
+        st.markdown("### 2단계 — BJND 진단 질문 5개")
+        if st.button("📊 BJND 진단 질문 생성 (Sonnet 4.6)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 BJND 진단 질문 5개 생성 중... (20~40초)"):
+                prompt_text = P.HUNTER_ENTRY_1_DIAGNOSIS_PROMPT.format(desire_input=desire_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry1_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # 진단 질문 표시 + 답변 입력
+    diagnosis_answers = stage_data.get("entry1_diagnosis_answers")
+    if not diagnosis_answers:
+        st.markdown("### 2단계 — BJND 진단 5개 질문에 답해주세요")
+        echo = diagnosis.get("echo_back", "")
+        if echo:
+            st.markdown(f'<div class="callout"><b>입력 재진술:</b> {echo}</div>', unsafe_allow_html=True)
+
+        intro = diagnosis.get("diagnosis_intro", "")
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e1_diag",
+            intro_text=intro,
+        )
+
+        if st.button("→ 진단 결과 + 정밀 사고 확장", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry1_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # ── 턴 3: BJND 판정 + 정밀 확장 질문 ──
+    expansion = stage_data.get("entry1_expansion")
+    if not expansion:
+        st.markdown("### 3단계 — BJND 판정 + 정밀 사고 확장 (Sonnet 4.6)")
+        if st.button("🔬 BJND 판정 + 정밀 확장 실행", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 결핍/상실 판정 + 정밀 질문 생성 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_1_EXPANSION_PROMPT.format(
+                    desire_input=desire_input,
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry1_expansion"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # 판정 결과 표시
+    diag_result = expansion.get("diagnosis_result", {})
+    bjnd_type = diag_result.get("type", "")
+    lack_score = diag_result.get("lack_score", 0)
+    loss_score = diag_result.get("loss_score", 0)
+
+    st.markdown("### 📊 BJND 판정 결과")
+    col_t, col_l, col_lo = st.columns(3)
+    with col_t:
+        st.metric("판정 유형", bjnd_type)
+    with col_l:
+        st.metric("결핍 점수", f"{lack_score}/5")
+    with col_lo:
+        st.metric("상실 점수", f"{loss_score}/5")
+
+    st.markdown(f'<div class="callout">{diag_result.get("reasoning", "")}</div>', unsafe_allow_html=True)
+
+    refs = diag_result.get("reference_works", [])
+    if refs:
+        st.markdown("**참고작 (같은 결의 작품):**")
+        for r in refs:
+            st.markdown(f"- {r}")
+
+    st.markdown("---")
+
+    # 정밀 확장 질문 답변
+    expansion_answers = stage_data.get("entry1_expansion_answers")
+    if not expansion_answers:
+        st.markdown("### 4단계 — 정밀 사고 확장 5개 질문에 답해주세요")
+        intro = expansion.get("expansion_intro", "")
+        answers = _hunter_render_questions(
+            expansion.get("expansion_questions", []),
+            "e1_exp",
+            intro_text=intro,
+        )
+
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry1_expansion_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # ── 턴 4: 시드 빌드 ──
+    seeds_result = stage_data.get("entry1_seeds")
+    if not seeds_result:
+        st.markdown("### 5단계 — 시드 후보 3개 빌드 (Opus 4.7)")
+        if st.button("🌱 시드 후보 3개 생성", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 시드 후보 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_1_SEEDS_PROMPT.format(
+                    desire_input=desire_input,
+                    diagnosis_result=json.dumps(diag_result, ensure_ascii=False, indent=2),
+                    expansion_answers=json.dumps(expansion_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry1_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # 시드 후보 표시 + 선택
+    st.markdown("### 🌱 시드 후보 3개")
+    synthesis = seeds_result.get("synthesis", "")
+    if synthesis:
+        st.markdown(f'<div class="callout"><b>본질 종합:</b> {synthesis}</div>', unsafe_allow_html=True)
+
+    bjnd_essence = seeds_result.get("bjnd_essence", {})
+    if bjnd_essence:
+        with st.expander("BJND 본질 상세"):
+            st.json(bjnd_essence)
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []), bjnd_essence=bjnd_essence)
+
+    recommendation = seeds_result.get("recommendation", "")
+    if recommendation:
+        st.markdown(f"**추천:** {recommendation}")
+
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("1")
+    with col_reset:
+        _hunter_reset_button("1")
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 2 — 시대 (3턴: 시대 진단 → 디테일 펼침 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_2_period():
+    small_meta(
+        "시대 진단(결핍형/상실형) → 시대 디테일 펼침 → 시드 후보 3개의 3턴 구조입니다. "
+        "그 시대에 대한 작가의 관계가 결핍(못 가본 시대 동경)인지 상실(잃어버린 시대 회한)인지 진단합니다."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # 턴 1: 입력
+    period_input = stage_data.get("entry2_period_input", "")
+    if not period_input:
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 2:
+            period_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 어떤 시대를 작품 배경으로 하고 싶으신가요?")
+        with st.form("entry2_period_form"):
+            period = st.text_area(
+                "시대 입력",
+                value=period_input,
+                height=80,
+                placeholder="예: IMF 때 이야기 / 1990년대 한국 / 조선 후기 / 2002년 월드컵 / 식민지 시대",
+            )
+            submitted = st.form_submit_button("→ 시대 진단 시작", type="primary", use_container_width=True)
+        if submitted and period.strip():
+            stage_data["entry2_period_input"] = period.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+        _hunter_back_button("2")
+        return
+
+    st.markdown(f"**작가의 시대:** _{period_input}_")
+    st.markdown("---")
+
+    # 턴 2: 시대 진단 질문
+    diagnosis = stage_data.get("entry2_diagnosis")
+    if not diagnosis:
+        if st.button("📊 시대 진단 질문 생성", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 시대 진단 질문 생성 중... (20~40초)"):
+                prompt_text = P.HUNTER_ENTRY_2_DIAGNOSIS_PROMPT.format(period_input=period_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry2_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 진단 질문 답변
+    diagnosis_answers = stage_data.get("entry2_diagnosis_answers")
+    if not diagnosis_answers:
+        echo = diagnosis.get("echo_back", "")
+        if echo:
+            st.markdown(f'<div class="callout"><b>입력 재진술:</b> {echo}</div>', unsafe_allow_html=True)
+        intro = diagnosis.get("diagnosis_intro", "")
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e2_diag",
+            intro_text=intro,
+        )
+        if st.button("→ 시대 판정 + 디테일 펼침", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry2_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 턴 3: 시대 판정 + 디테일 펼침
+    expansion = stage_data.get("entry2_expansion")
+    if not expansion:
+        if st.button("🔬 시대 판정 + 디테일 펼침", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 시대 판정 + 디테일 펼침 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_2_EXPANSION_PROMPT.format(
+                    period_input=period_input,
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry2_expansion"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 시대 판정 표시
+    diag_result = expansion.get("diagnosis_result", {})
+    st.markdown("### 🕰️ 시대 판정")
+    st.markdown(f"**유형:** {diag_result.get('type', '')}")
+    st.markdown(f"**시대 명명:** {diag_result.get('period_label', '')}")
+    st.markdown(f'<div class="callout">{diag_result.get("reasoning", "")}</div>', unsafe_allow_html=True)
+
+    canvas = expansion.get("period_detail_canvas", {})
+    if canvas:
+        with st.expander("📜 시대 디테일 캔버스", expanded=True):
+            st.markdown(f"**감각적 정수:** {canvas.get('sensory_essence', '')}")
+            st.markdown(f"**사회 풍경:** {canvas.get('social_landscape', '')}")
+            st.markdown(f"**결핍/상실 풍경:** {canvas.get('lack_or_loss_landscape', '')}")
+            add = canvas.get("additional_details", [])
+            if add:
+                st.markdown("**추가 디테일:**")
+                for d in add:
+                    st.markdown(f"- {d}")
+
+    st.markdown("---")
+
+    # 정밀 확장 답변
+    expansion_answers = stage_data.get("entry2_expansion_answers")
+    if not expansion_answers:
+        intro = expansion.get("expansion_intro", "")
+        answers = _hunter_render_questions(
+            expansion.get("expansion_questions", []),
+            "e2_exp",
+            intro_text=intro,
+        )
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry2_expansion_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 턴 4: 시드 빌드
+    seeds_result = stage_data.get("entry2_seeds")
+    if not seeds_result:
+        if st.button("🌱 시드 후보 3개 생성 (Opus 4.7)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 시대 시드 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_2_SEEDS_PROMPT.format(
+                    period_input=period_input,
+                    diagnosis_result=json.dumps(diag_result, ensure_ascii=False, indent=2),
+                    expansion_answers=json.dumps(expansion_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry2_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 시드 표시
+    st.markdown("### 🌱 시대 시드 후보 3개")
+    synthesis = seeds_result.get("synthesis", "")
+    if synthesis:
+        st.markdown(f'<div class="callout"><b>본질 종합:</b> {synthesis}</div>', unsafe_allow_html=True)
+
+    period_essence = seeds_result.get("period_essence", {})
+    if period_essence:
+        with st.expander("시대 본질 상세"):
+            st.json(period_essence)
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []), period_essence=period_essence)
+
+    if seeds_result.get("recommendation"):
+        st.markdown(f"**추천:** {seeds_result['recommendation']}")
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("2")
+    with col_reset:
+        _hunter_reset_button("2")
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 3 — 트렌드 (2턴: 분석+3길 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_3_trend():
+    small_meta(
+        "트렌드 분석 + 추종/변주/회피 3길 → 시드 후보 3개의 2턴 구조입니다. "
+        "BJND는 적용하지 않습니다 (장르·포맷 결정 입구이지 인물 욕망 입구가 아니므로)."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # 턴 1: 입력
+    trend_input = stage_data.get("entry3_trend_input", "")
+    if not trend_input:
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 3:
+            trend_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 어떤 트렌드에 대해 입장을 정리하고 싶으신가요?")
+        with st.form("entry3_trend_form"):
+            trend = st.text_area(
+                "트렌드 입력",
+                value=trend_input,
+                height=80,
+                placeholder="예: 회빙환 해야 하나 / 숏폼 드라마가 대세 / SF가 뜨고 있다 / 사극 부활 / 로맨스 판타지",
+            )
+            submitted = st.form_submit_button("→ 트렌드 분석 시작", type="primary", use_container_width=True)
+        if submitted and trend.strip():
+            stage_data["entry3_trend_input"] = trend.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+        _hunter_back_button("3")
+        return
+
+    st.markdown(f"**작가의 트렌드:** _{trend_input}_")
+    st.markdown("---")
+
+    # 턴 2: 트렌드 분석 + 3길 + 진단 질문
+    diagnosis = stage_data.get("entry3_diagnosis")
+    if not diagnosis:
+        if st.button("📈 트렌드 분석 + 3길 펼침", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 트렌드 분석 + 3길 + 진단 질문 생성 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_3_DIAGNOSIS_PROMPT.format(trend_input=trend_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry3_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("3")
+        with col_reset:
+            _hunter_reset_button("3")
+        return
+
+    # 트렌드 분석 표시
+    analysis = diagnosis.get("trend_analysis", {})
+    st.markdown("### 📈 트렌드 분석")
+    st.markdown(f"**본질:** {analysis.get('trend_essence', '')}")
+    st.markdown(f"**시장 위치:** {analysis.get('market_position', '')}")
+    st.caption(analysis.get("market_reasoning", ""))
+
+    st.markdown("---")
+    st.markdown("### 🛤️ 추종 / 변주 / 회피 3길")
+    paths = diagnosis.get("three_paths", {})
+    col_f, col_v, col_a = st.columns(3)
+    for col, key, label in [(col_f, "follow", "추종"), (col_v, "variation", "변주"), (col_a, "avoidance", "회피")]:
+        p = paths.get(key, {})
+        with col:
+            st.markdown(f"**{label}**")
+            st.caption(p.get("definition", ""))
+            st.markdown(f"<span style='color:#2E7D32;font-size:.8rem;'>장점: {p.get('advantage', '')}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:#C62828;font-size:.8rem;'>위험: {p.get('risk', '')}</span>", unsafe_allow_html=True)
+            examples = p.get("examples", [])
+            if examples:
+                st.caption("예: " + " / ".join(examples))
+
+    st.markdown("---")
+
+    # 진단 답변
+    diagnosis_answers = stage_data.get("entry3_diagnosis_answers")
+    if not diagnosis_answers:
+        intro = "트렌드 분석을 보셨으니 이제 작가 본인의 결을 진단합니다."
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e3_diag",
+            intro_text=intro,
+        )
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry3_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("3")
+        with col_reset:
+            _hunter_reset_button("3")
+        return
+
+    # 시드 빌드
+    seeds_result = stage_data.get("entry3_seeds")
+    if not seeds_result:
+        if st.button("🌱 시드 후보 3개 생성 (Opus 4.7)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 트렌드 노선 시드 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_3_SEEDS_PROMPT.format(
+                    trend_input=trend_input,
+                    trend_analysis=json.dumps(analysis, ensure_ascii=False, indent=2),
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry3_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("3")
+        with col_reset:
+            _hunter_reset_button("3")
+        return
+
+    # 시드 표시
+    selected_path = seeds_result.get("selected_path", "")
+    st.markdown(f"### 🌱 시드 후보 3개 — 선택 노선: **{selected_path}**")
+    if seeds_result.get("path_reasoning"):
+        st.markdown(f'<div class="callout">{seeds_result["path_reasoning"]}</div>', unsafe_allow_html=True)
+    if seeds_result.get("synthesis"):
+        st.markdown(f"**본질 종합:** {seeds_result['synthesis']}")
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []))
+
+    if seeds_result.get("market_warning"):
+        st.warning(f"⚠ **시장 위험 안내:** {seeds_result['market_warning']}")
+    if seeds_result.get("recommendation"):
+        st.markdown(f"**추천:** {seeds_result['recommendation']}")
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("3")
+    with col_reset:
+        _hunter_reset_button("3")
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 4 — What if (2턴: 가설 분석+4함정+톤3분기 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_4_whatif():
+    small_meta(
+        "가설 분석 + 4대 함정 경고 + 톤 3분기 → 시드 후보 3개의 2턴 구조입니다. "
+        "가설의 매력이 결핍/상실/세계 변형 어느 쪽 충족 판타지인지 BJND 보조 진단합니다."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # 턴 1: 입력
+    whatif_input = stage_data.get("entry4_whatif_input", "")
+    if not whatif_input:
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 4:
+            whatif_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 어떤 'What if' 가설이 떠오르셨나요?")
+        with st.form("entry4_whatif_form"):
+            whatif = st.text_area(
+                "가설 입력",
+                value=whatif_input,
+                height=80,
+                placeholder="예: 로또 1등 + 일주일 시간 루프 / AI가 인간을 사랑한다면 / 죽은 자가 살아 돌아온다면",
+            )
+            submitted = st.form_submit_button("→ 가설 분석 시작", type="primary", use_container_width=True)
+        if submitted and whatif.strip():
+            stage_data["entry4_whatif_input"] = whatif.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+        _hunter_back_button("4")
+        return
+
+    st.markdown(f"**작가의 가설:** _{whatif_input}_")
+    st.markdown("---")
+
+    # 턴 2: 가설 분석 + 4함정 + 톤 3분기 + 진단 질문
+    diagnosis = stage_data.get("entry4_diagnosis")
+    if not diagnosis:
+        if st.button("❓ 가설 분석 + 4대 함정 + 톤 3분기", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 가설 분석 + 4함정 + 톤3분기 + 진단 질문 생성 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_4_DIAGNOSIS_PROMPT.format(whatif_input=whatif_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry4_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("4")
+        with col_reset:
+            _hunter_reset_button("4")
+        return
+
+    # 가설 분석 표시
+    analysis = diagnosis.get("hypothesis_analysis", {})
+    st.markdown("### ❓ 가설 분석")
+    st.markdown(f"**핵심 동력:** {analysis.get('core_dynamic', '')}")
+    st.markdown(f"**잠정 BJND:** {analysis.get('bjnd_provisional', '')}")
+    examples = analysis.get("examples", [])
+    if examples:
+        st.caption("유사 가설 작품: " + " / ".join(examples))
+
+    # 4대 함정 경고
+    traps = diagnosis.get("four_traps_warning", {})
+    if traps:
+        st.markdown("### ⚠ 4대 함정 경고")
+        st.markdown(f"- **함정 1 (가설 의존성):** {traps.get('trap_1_hypothesis_crutch', '')}")
+        st.markdown(f"- **함정 2 (룰 위반):** {traps.get('trap_2_rule_violation', '')}")
+        st.markdown(f"- **함정 3 (결말 회피):** {traps.get('trap_3_ending_avoidance', '')}")
+        st.markdown(f"- **함정 4 (일회성):** {traps.get('trap_4_one_shot', '')}")
+
+    # 톤 3분기
+    tones = diagnosis.get("three_tones", {})
+    if tones:
+        st.markdown("### 🎭 톤 3분기")
+        col_a, col_b, col_c = st.columns(3)
+        for col, key, label in [(col_a, "tone_a_comedy", "코미디"), (col_b, "tone_b_drama", "드라마/멜로"), (col_c, "tone_c_thriller", "스릴러/누아르")]:
+            t = tones.get(key, {})
+            with col:
+                st.markdown(f"**{label}**")
+                st.caption(t.get("description", ""))
+                if t.get("example"):
+                    st.caption(f"예: {t['example']}")
+
+    st.markdown("---")
+
+    # 진단 답변
+    diagnosis_answers = stage_data.get("entry4_diagnosis_answers")
+    if not diagnosis_answers:
+        intro = "가설 분석을 보셨으니 이제 작가의 직감을 진단합니다."
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e4_diag",
+            intro_text=intro,
+        )
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry4_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("4")
+        with col_reset:
+            _hunter_reset_button("4")
+        return
+
+    # 시드 빌드
+    seeds_result = stage_data.get("entry4_seeds")
+    if not seeds_result:
+        if st.button("🌱 시드 후보 3개 생성 (Opus 4.7)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 가설 시드 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_4_SEEDS_PROMPT.format(
+                    whatif_input=whatif_input,
+                    hypothesis_analysis=json.dumps(analysis, ensure_ascii=False, indent=2),
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry4_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("4")
+        with col_reset:
+            _hunter_reset_button("4")
+        return
+
+    # 시드 표시
+    st.markdown(f"### 🌱 시드 후보 3개 — 선택 톤: **{seeds_result.get('selected_tone', '')}**")
+    bjnd_essence = seeds_result.get("bjnd_essence", {})
+    if bjnd_essence:
+        st.markdown(f"**BJND 본질:** {bjnd_essence.get('type', '')} — {bjnd_essence.get('explanation', '')}")
+    rule_lock = seeds_result.get("hypothesis_rule_lock", "")
+    if rule_lock:
+        st.markdown(f'<div class="callout"><b>가설 룰 LOCK:</b> {rule_lock}</div>', unsafe_allow_html=True)
+    if seeds_result.get("synthesis"):
+        st.markdown(f"**본질 종합:** {seeds_result['synthesis']}")
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []), bjnd_essence=bjnd_essence)
+
+    if seeds_result.get("recommendation"):
+        st.markdown(f"**추천:** {seeds_result['recommendation']}")
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("4")
+    with col_reset:
+        _hunter_reset_button("4")
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 5 — 사실 (2턴: 캔버스+5시점 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_5_fact():
+    small_meta(
+        "사실 캔버스 + 5시점 발굴 + BJND 보조 진단 → 시드 후보 3개의 2턴 구조입니다. "
+        "사실이 인물에게 만든 게 결핍/상실 어느 순간인지 진단하고, 5시점 중 어느 자리에서 들어갈지 결정합니다."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # 턴 1: 입력
+    fact_input = stage_data.get("entry5_fact_input", "")
+    if not fact_input:
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 5:
+            fact_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 어떤 역사·실화·뉴스를 작품화하고 싶으신가요?")
+        with st.form("entry5_fact_form"):
+            fact = st.text_area(
+                "사실 입력",
+                value=fact_input,
+                height=80,
+                placeholder="예: 1945.8.15 일본인 / 세월호 이후 / IMF 외환위기 / 5.18 광주 / n번방 사건",
+            )
+            submitted = st.form_submit_button("→ 사실 캔버스 펼침", type="primary", use_container_width=True)
+        if submitted and fact.strip():
+            stage_data["entry5_fact_input"] = fact.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+        _hunter_back_button("5")
+        return
+
+    st.markdown(f"**작가의 사실:** _{fact_input}_")
+    st.markdown("---")
+
+    # 턴 2: 사실 캔버스 + 5시점 + 진단 질문
+    diagnosis = stage_data.get("entry5_diagnosis")
+    if not diagnosis:
+        if st.button("📜 사실 캔버스 + 5시점 펼침", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 사실 캔버스 + 5시점 + 진단 질문 생성 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_5_DIAGNOSIS_PROMPT.format(fact_input=fact_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry5_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("5")
+        with col_reset:
+            _hunter_reset_button("5")
+        return
+
+    # 사실 캔버스 표시
+    canvas = diagnosis.get("fact_canvas", {})
+    if canvas:
+        st.markdown("### 📜 사실 캔버스")
+        st.markdown(f"**무슨 일:** {canvas.get('what_happened', '')}")
+        st.markdown(f"**시점/공간:** {canvas.get('time_space', '')}")
+        st.markdown(f"**핵심 인물 유형:** {canvas.get('key_figures', '')}")
+        st.markdown(f"**구조적 원인:** {canvas.get('structural_cause', '')}")
+        st.markdown(f"**결과/여파:** {canvas.get('consequences', '')}")
+        less_known = canvas.get("less_known_details", [])
+        if less_known:
+            with st.expander("덜 알려진 디테일"):
+                for d in less_known:
+                    st.markdown(f"- {d}")
+
+    # 5시점 표시
+    viewpoints = diagnosis.get("five_viewpoints", {})
+    if viewpoints:
+        st.markdown("### 🔭 5시점")
+        for key, label in [("direct", "직접"), ("pre_event", "직전"), ("post_event", "직후"), ("peripheral", "주변"), ("generational", "후세")]:
+            v = viewpoints.get(key, {})
+            with st.expander(f"**{label}** — {v.get('definition', '')}"):
+                st.markdown(f"<span style='color:#2E7D32;'>장점: {v.get('advantage', '')}</span>", unsafe_allow_html=True)
+                st.markdown(f"<span style='color:#C62828;'>위험: {v.get('risk', '')}</span>", unsafe_allow_html=True)
+                if v.get("example"):
+                    st.caption(f"예: {v['example']}")
+
+    st.markdown("---")
+
+    # 진단 답변
+    diagnosis_answers = stage_data.get("entry5_diagnosis_answers")
+    if not diagnosis_answers:
+        intro = "사실 캔버스와 5시점을 보셨으니 이제 작가의 진입점을 진단합니다."
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e5_diag",
+            intro_text=intro,
+        )
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry5_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("5")
+        with col_reset:
+            _hunter_reset_button("5")
+        return
+
+    # 시드 빌드
+    seeds_result = stage_data.get("entry5_seeds")
+    if not seeds_result:
+        if st.button("🌱 시드 후보 3개 생성 (Opus 4.7)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 사실 기반 시드 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_5_SEEDS_PROMPT.format(
+                    fact_input=fact_input,
+                    fact_canvas=json.dumps(canvas, ensure_ascii=False, indent=2),
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry5_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("5")
+        with col_reset:
+            _hunter_reset_button("5")
+        return
+
+    # 시드 표시
+    st.markdown(f"### 🌱 시드 후보 3개")
+    st.markdown(f"**선택 시점:** {seeds_result.get('selected_viewpoint', '')} · **선택 각도:** {seeds_result.get('selected_angle', '')}")
+    bjnd_essence = seeds_result.get("bjnd_essence", {})
+    if bjnd_essence:
+        st.markdown(f"**BJND 본질:** {bjnd_essence.get('type', '')} — {bjnd_essence.get('explanation', '')}")
+    ethics = seeds_result.get("ethics_lock", "")
+    if ethics:
+        st.warning(f"⚖ **윤리 LOCK:** {ethics}")
+    if seeds_result.get("synthesis"):
+        st.markdown(f"**본질 종합:** {seeds_result['synthesis']}")
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []), bjnd_essence=bjnd_essence)
+
+    if seeds_result.get("recommendation"):
+        st.markdown(f"**추천:** {seeds_result['recommendation']}")
+    add_research = seeds_result.get("additional_research_needed", [])
+    if add_research:
+        st.markdown("**추가 리서치 권장:**")
+        for r in add_research:
+            st.markdown(f"- {r}")
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("5")
+    with col_reset:
+        _hunter_reset_button("5")
 
 
 # ═══════════════════════════════════════════════════════════
