@@ -305,7 +305,8 @@ with st.sidebar:
             Build: {ENGINE_BUILD_DATE}<br>
             HUNTER 발굴 + TRIAGE 진단<br>
             <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합 5키</span><br>
-            <span style="color:#191970;font-weight:600;">+ v1.2 Stanton 5원칙 · Hook&Punch 4키</span>
+            <span style="color:#191970;font-weight:600;">+ v1.2 Stanton 5원칙 · Hook&Punch 4키</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.3 장르 · 시장 좌표 2키</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1201,10 +1202,14 @@ def build_seed_json(state: Dict[str, Any]) -> str:
     seed.setdefault("locked_punch_scene", {})
     seed.setdefault("locked_ending_promise", {})
 
+    # ─── v1.3: 장르 + 시장 좌표 2개 신규 키 ───
+    seed.setdefault("locked_genre_primary", {})
+    seed.setdefault("locked_market_position", {})
+
     creator_input = {
         "_idea_engine_meta": {
             "version": ENGINE_VERSION,
-            "patch": "v1.2 (Stanton 5원칙 + Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
+            "patch": "v1.3 (장르+시장좌표 2키) on v1.2 (Stanton+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
             "generated_at": datetime.now().isoformat(),
             "project_id": seed.get("project_id", ""),
             "verdict": state["stage_7_verdict"].get("final_verdict", ""),
@@ -1958,16 +1963,19 @@ def _render_scoring_result(hk):
 
 
 def page_stage_4():
-    section_header("📐 STEP 4 · 포맷 추천", "5 FORMAT FIT")
-    small_meta("5개 포맷 적합도를 동시 판정합니다. 1순위 포맷이 자동 추천됩니다.")
-    
+    section_header("📐 STEP 4 · 포맷 + 장르 + 시장 좌표", "FORMAT · GENRE · MARKET POSITION")
+    small_meta(
+        "5개 포맷 적합도 · 한국 장르 10분류 매핑 · 시장 좌표 4분류(TENTPOLE/MASTERCLASS/STREAMING/GENRE FEATURE)를 "
+        "한 번에 판정합니다. v1.3 신규 — 장르와 시장 좌표가 Creator Engine 룰팩 호출에 직접 활용됩니다."
+    )
+
     inp = st.session_state["stage_1_input"]
     logline = st.session_state.get("selected_logline", "")
-    
+
     if not st.session_state.get("stage_4_format"):
-        if st.button("📐 포맷 추천 실행", type="primary", use_container_width=True):
+        if st.button("📐 포맷 + 장르 + 시장 좌표 진단 실행", type="primary", use_container_width=True):
             client = get_anthropic_client()
-            with st.spinner("Sonnet이 5개 포맷 적합도 판정 중..."):
+            with st.spinner("Sonnet이 포맷 · 장르 · 시장 좌표 동시 판정 중... (30~60초)"):
                 prompt_text = P.FORMAT_RECOMMEND_PROMPT.format(
                     title=inp["title"], logline=logline,
                     genre=inp["genre"], raw_idea=inp["raw_idea"],
@@ -1980,12 +1988,84 @@ def page_stage_4():
                 st.rerun()
     else:
         fm = st.session_state["stage_4_format"]
+
+        # ════════════════════════════════════════════════════
+        # v1.3 신규: 장르 매핑 + 시장 좌표 (상단 우선 표시)
+        # ════════════════════════════════════════════════════
+        genre_map = fm.get("genre_mapping", {})
+        market_pos = fm.get("market_position", {})
+
+        if genre_map or market_pos:
+            cgenre, cmarket = st.columns(2)
+
+            # 장르 매핑 카드
+            with cgenre:
+                st.markdown("#### 🎭 장르 분류 (v1.3)")
+                primary_g = genre_map.get("primary_genre", "")
+                secondary_g = genre_map.get("secondary_genre")
+                genre_text = primary_g
+                if secondary_g and secondary_g != "null":
+                    genre_text = f"{primary_g} × {secondary_g}"
+
+                st.markdown(f"""
+                <div style="border:2px solid #191970;border-radius:12px;padding:14px;background:#F0F2FF;margin-bottom:10px;">
+                    <div style="font-size:.7rem;color:#191970;font-weight:700;letter-spacing:.05em;">KOREAN GENRE</div>
+                    <div style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;color:#191970;margin-top:4px;">{genre_text}</div>
+                    <div style="font-size:.8rem;color:#555;margin-top:8px;line-height:1.5;">{genre_map.get('primary_reasoning', '')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                if secondary_g and secondary_g != "null" and genre_map.get("secondary_reasoning"):
+                    st.caption(f"복합 장르 결합: {genre_map['secondary_reasoning']}")
+                if genre_map.get("korean_genre_anchor"):
+                    st.caption(f"🇰🇷 {genre_map['korean_genre_anchor']}")
+
+            # 시장 좌표 카드
+            with cmarket:
+                st.markdown("#### 🎯 시장 좌표 (v1.3)")
+                primary_m = market_pos.get("primary_position", "")
+                secondary_m = market_pos.get("secondary_position")
+
+                pos_labels = {
+                    "TENTPOLE": ("TENTPOLE", "메이저 영화 흥행", "#191970"),
+                    "MASTERCLASS": ("MASTERCLASS", "거장 감독 제안", "#7B1FA2"),
+                    "STREAMING": ("STREAMING", "OTT 시리즈", "#E91E63"),
+                    "GENRE_FEATURE": ("GENRE FEATURE", "중·소형 장르 영화", "#00897B"),
+                }
+                label, sub, color = pos_labels.get(primary_m, (primary_m, "", "#191970"))
+
+                st.markdown(f"""
+                <div style="border:2px solid {color};border-radius:12px;padding:14px;background:#FFFEF5;margin-bottom:10px;">
+                    <div style="font-size:.7rem;color:{color};font-weight:700;letter-spacing:.05em;">MARKET POSITION</div>
+                    <div style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;color:{color};margin-top:4px;">{label}</div>
+                    <div style="font-size:.75rem;color:#666;font-style:italic;">{sub}</div>
+                    <div style="font-size:.8rem;color:#555;margin-top:8px;line-height:1.5;">{market_pos.get('primary_reasoning', '')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if secondary_m and secondary_m != "null":
+                    sec_label = pos_labels.get(secondary_m, (secondary_m, "", ""))[0]
+                    st.caption(f"2순위 좌표: **{sec_label}** — {market_pos.get('secondary_reasoning', '')}")
+
+                buyers = market_pos.get("target_buyers", [])
+                if buyers:
+                    st.caption("**판매 대상**: " + " / ".join(buyers))
+
+                if market_pos.get("production_implications"):
+                    with st.expander("제작 영향", expanded=False):
+                        st.markdown(market_pos["production_implications"])
+
+            st.markdown("---")
+
+        # ════════════════════════════════════════════════════
+        # 기존: 5개 포맷 적합도
+        # ════════════════════════════════════════════════════
+        st.markdown("#### 📊 5개 포맷 적합도")
         fs = fm.get("format_scores", {})
         format_kr = {
             "feature_film": "장편 영화", "ott_series": "OTT 시리즈",
             "mini_series": "미니시리즈", "short_form": "숏폼 드라마", "web_novel": "웹소설"
         }
-        
+
         for k, kr in format_kr.items():
             f = fs.get(k, {})
             score = f.get("score", 0)
@@ -1997,11 +2077,11 @@ def page_stage_4():
                 <div class="axis-comment">{f.get('reason', '')}</div>
             </div>
             """, unsafe_allow_html=True)
-        
+
         st.markdown("---")
         primary = fm.get("primary_format_detail", {})
-        st.markdown(f"### ▶ 1순위: **{primary.get('format_name', '')}**")
-        
+        st.markdown(f"### ▶ 1순위 포맷: **{primary.get('format_name', '')}**")
+
         ic = st.columns(3)
         with ic[0]:
             if primary.get("episode_count"):
@@ -2012,15 +2092,15 @@ def page_stage_4():
         with ic[2]:
             if primary.get("total_runtime"):
                 st.metric("전체 분량", primary["total_runtime"])
-        
+
         st.markdown("**IP 빌딩 전략**")
         st.markdown(f'<div class="callout">{fm.get("ip_building_strategy", "")}</div>', unsafe_allow_html=True)
-        
+
         if fm.get("unsuitable_formats"):
             st.markdown("**부적합 포맷**")
             for u in fm["unsuitable_formats"]:
                 st.markdown(f"- **{u['format']}**: {u['reason']}")
-        
+
         st.markdown("---")
         cb, cr, cn = st.columns([1, 1, 2])
         with cb:
@@ -2562,6 +2642,57 @@ def page_stage_7():
                     st.markdown(f"**작가 의도**: {ending_promise['writer_intent']}")
                 if ending_promise.get("satisfactory_logic"):
                     st.markdown(f"**만족 결말 논리**: {ending_promise['satisfactory_logic']}")
+
+        # ────────────────────────────────────────────────────
+        # v1.3 신규 2개 LOCKED 영역 (장르 + 시장 좌표)
+        # ────────────────────────────────────────────────────
+        # ⑩ locked_genre_primary
+        genre_primary = seed.get("locked_genre_primary", {}) or {}
+        with st.expander(
+            f"⑩ 장르 분류 (locked_genre_primary · v1.3) · {'있음' if genre_primary else '없음'}",
+            expanded=bool(genre_primary),
+        ):
+            if not genre_primary:
+                st.caption("v1.2 이전 시드입니다 (빈 객체). v1.3 신규 키 미적용.")
+            elif isinstance(genre_primary, dict):
+                primary_g = genre_primary.get("primary", "")
+                secondary_g = genre_primary.get("secondary")
+                genre_text = primary_g
+                if secondary_g and secondary_g not in ("null", None):
+                    genre_text = f"{primary_g} × {secondary_g}"
+                st.markdown(f'<div style="background:#F0F2FF;border-left:3px solid #191970;padding:10px;font-weight:600;font-size:1.05rem;">한국 장르 매핑: <b>{genre_text}</b></div>', unsafe_allow_html=True)
+                if genre_primary.get("reasoning"):
+                    st.markdown(f"**근거**: {genre_primary['reasoning']}")
+                if genre_primary.get("korean_genre_anchor"):
+                    st.caption(f"🇰🇷 {genre_primary['korean_genre_anchor']}")
+
+        # ⑪ locked_market_position
+        market_position = seed.get("locked_market_position", {}) or {}
+        with st.expander(
+            f"⑪ 시장 좌표 (locked_market_position · v1.3) · {'있음' if market_position else '없음'}",
+            expanded=bool(market_position),
+        ):
+            if not market_position:
+                st.caption("v1.2 이전 시드입니다 (빈 객체). v1.3 신규 키 미적용.")
+            elif isinstance(market_position, dict):
+                primary_m = market_position.get("primary", "")
+                secondary_m = market_position.get("secondary")
+                pos_color = {
+                    "TENTPOLE": "#191970",
+                    "MASTERCLASS": "#7B1FA2",
+                    "STREAMING": "#E91E63",
+                    "GENRE_FEATURE": "#00897B",
+                }.get(primary_m, "#191970")
+                st.markdown(f'<div style="background:#FFFEF5;border-left:3px solid {pos_color};padding:10px;font-weight:600;font-size:1.05rem;color:{pos_color};">시장 좌표: <b>{primary_m}</b></div>', unsafe_allow_html=True)
+                if secondary_m and secondary_m not in ("null", None):
+                    st.caption(f"2순위 대안: **{secondary_m}**")
+                if market_position.get("reasoning"):
+                    st.markdown(f"**근거**: {market_position['reasoning']}")
+                buyers = market_position.get("target_buyers", [])
+                if buyers:
+                    st.markdown(f"**판매 대상**: {' / '.join(buyers)}")
+                if market_position.get("production_implications"):
+                    st.markdown(f"**제작 영향**: {market_position['production_implications']}")
 
         st.markdown("---")
         section_header("⬇ STEP 8 · 다운로드", "EXPORT")
