@@ -582,7 +582,37 @@ Creator Engine이 해석한다.
         "options": ["후보 답안 1", "후보 답안 2"],
         "importance": "high | medium | low"
       }}
-    ]
+    ],
+
+    "locked_empathy_anchor": {{
+      "anchor_type": "동정형 | 동일시형 | 매혹형 | 윤리적 양가성형",
+      "entry_point": "감정이입 진입점 1문장",
+      "korean_reference": "한국 작품 좌표 1편 + 1문장",
+      "hollywood_reference": "할리우드 작품 좌표 1편 + 1문장"
+    }},
+
+    "locked_hook_signature": {{
+      "hook_one_liner": "30초 후크 한 문장 — 시청자가 듣자마자 보고 싶어지는 것",
+      "mechanism": "충돌 | 반전 | 금기 | 모순",
+      "promise": "Hook이 시청자에게 하는 약속 1문장",
+      "differentiation": "가장 닮은 작품과의 차별점 1문장"
+    }},
+
+    "locked_punch_scene": {{
+      "scene_description": "잊을 수 없는 한 장면 묘사 2~3문장 — 본 뒤 일주일 동안 떠올리게 되는 장면",
+      "dialogue_mode": "침묵 | 단일음 | 폭발 | 독백",
+      "final_shot": "마지막 컷 카메라 시선 1문장",
+      "primary_emotion": "정서 좌표 1단어",
+      "placement": "콜드오픈 | 미드포인트 | 클라이맥스 | 결말 직전 | 결말",
+      "signature_potential": "HIGH | MEDIUM | LOW — 작품의 시각적 서명 가능성"
+    }},
+
+    "locked_ending_promise": {{
+      "ending_type": "해피 | 비극 | 모호 | 폭로 | 수용 | 회복 불가능 | 의문",
+      "catharsis_mechanism": "Aristotle 카타르시스 메커니즘 1문장 (Recognition·Reversal·Pathos)",
+      "writer_intent": "작가가 시청자에게 남기고 싶은 정서 1문장",
+      "satisfactory_logic": "해피엔딩 아니어도 왜 만족스러운가 1~2문장"
+    }}
   }},
   "executive_summary": "BLUE JEANS PICTURES 임원 미팅용 최종 요약 - 4~6문장. 이 프로젝트를 한 페이지로 설명한다고 했을 때 들어가야 할 내용."
 }}
@@ -591,6 +621,8 @@ Creator Engine이 해석한다.
 - final_verdict가 NOGO인 경우에도 locked_seed_package는 채운다 (참고용).
 - 단 이 경우 locked_risks_to_address에 NOGO 사유를 명시한다.
 - v1.1 신규 5개 키는 작품 특성상 해당 없어도 키를 생략하지 말 것. 빈 배열/빈 객체로 명시.
+- v1.2 신규 4개 키(empathy_anchor·hook_signature·punch_scene·ending_promise)는
+  Stage 3-A·3-B 발굴 결과를 그대로 가져와 LOCK한다. Stage 3에서 발굴이 약하면 시드 전체가 약하다.
 - locked_core_decisions와 key_decisions_made는 의미상 같지만 형식이 다르다 — 둘 다 출력.
 - locked_creator_questions와 pending_decisions_for_creator도 마찬가지 — 둘 다 출력.
 - 자연어 배열(key_decisions_made/pending_decisions_for_creator)은 사용자 검토용,
@@ -2065,3 +2097,376 @@ HUNTER_ENTRY_5_SEEDS_PROMPT = """당신은 작가의 사실 진단 답변을 받
 - '직접' 시점은 강도 최대지만 윤리적 부담 명시.
 - 작가가 추가 리서치를 해야 할 부분을 additional_research_needed에 명시.
 """ + HUNTER_SHARED_RULES + SHARED_RULES
+
+
+# ============================================================================
+# ============================================================================
+# v1.2 — STAGE 3 격상: Stanton 5원칙 + Hook & Punch 발굴
+# ============================================================================
+# 기존 Hook 5축 채점(구체성/갈등/장르/판돈/독창성)을 그대로 유지하되,
+# 그 앞에 두 단계를 추가하여 진단의 깊이를 한 단계 끌어올린다.
+#
+# 3-A: Stanton 5원칙 진단 (Empathy/Desire/Stakes/Hook&Punch/Ending)
+#      한국·할리우드 좌표 자동 매핑으로 작가가 자기 결을 발견하게 한다.
+#
+# 3-B: Hook & Punch 발굴 (작가 답변으로 hook_signature + punch_scene 빌드)
+#      Hook = 한 줄 후크 / Punch = 잊을 수 없는 한 장면
+#
+# 3-C: 기존 5축 채점 (발굴된 Hook & Punch가 채점 정확도를 끌어올림)
+#
+# 모델 정책: 3-A/3-B는 Sonnet 4.6, 3-C는 기존대로 Sonnet 4.6
+# ============================================================================
+# ============================================================================
+
+
+STORY_FOUNDATION_REFERENCE_GUIDE = """
+[할리우드 + 한국 양축 좌표 매핑 원칙]
+
+작가가 자기 작품의 결을 발견할 수 있도록, 각 진단마다 한국 작품 + 할리우드 작품을 좌표로 매핑한다.
+카탈로그를 펼치지 말고 가장 정확한 3편(한국 1~2편 + 할리우드 1~2편)만 좌표로 제시한다.
+
+[활용 이론 자원]
+- Andrew Stanton 5원칙 (Pixar, 2012 TED) — 본 엔진의 진단 골격
+- Robert McKee 〈Story〉 — Inciting Incident · Controlling Idea · Negation of the Negation
+- Blake Snyder 〈Save the Cat!〉 — 15-beat Sheet · Genre 10분류
+- Christopher Vogler 〈The Writer's Journey〉 — Hero's Journey 12단계
+- Syd Field 〈Screenplay〉 — Three-Act Paradigm · Plot Point I·II
+- John Truby 〈The Anatomy of Story〉 — 22-step · Moral Argument
+- Aristotle 〈Poetics〉 — 비극의 6요소 · Catharsis · Recognition·Reversal
+- Lajos Egri 〈The Art of Dramatic Writing〉 — Premise · Three-Dimensional Character
+- K.M. Weiland — Character Arc 분류 (Positive/Flat/Negative)
+- Pixar 22 Rules of Storytelling (Emma Coats)
+
+[활용 작품군]
+- 한국 메이저 OTT/영화: 〈오징어게임〉〈더 글로리〉〈기생충〉〈헤어질 결심〉〈올드보이〉〈오랜만에〉〈헌트〉〈믿을 수 없는 이야기〉〈마더〉
+- 한국 인디·고전: 〈8월의 크리스마스〉〈공동경비구역 JSA〉〈박하사탕〉〈살인의 추억〉
+- 할리우드 메이저: 〈Se7en〉〈Prisoners〉〈No Country for Old Men〉〈Manchester by the Sea〉〈Chinatown〉〈Million Dollar Baby〉〈Mystic River〉〈Silence of the Lambs〉〈Eternal Sunshine of the Spotless Mind〉
+- 할리우드 시리즈: 〈Breaking Bad〉〈Mad Men〉〈Better Call Saul〉〈True Detective〉〈Succession〉〈The Wire〉
+
+[매핑 원칙]
+- 작품 나열 금지. 정확한 3편만 매핑한다.
+- 매핑 작품은 작가의 결과 가장 가까운 것 — 비슷한 것이 아니라 작동 메커니즘이 동일한 것.
+- 작품 인용 시 "왜 이 좌표인가"를 1문장으로 설명한다.
+"""
+
+
+STAGE_3A_STORY_FOUNDATION_PROMPT = """당신은 BLUE JEANS PICTURES의 시니어 디벨롭먼트 분석가이며,
+할리우드와 한국 OTT의 디벨롭먼트 표준을 모두 다룬다.
+작가의 아이디어를 Andrew Stanton 5원칙으로 진단하고, 각 원칙마다 한국·할리우드 작품을 좌표로 매핑한다.
+
+[작가의 입력]
+- 제목: {title}
+- 장르: {genre}
+- 타겟 시장: {target_market}
+- 포맷: {format}
+- 원본 아이디어: {raw_idea}
+- 정제된 로그라인: {logline}
+
+[Andrew Stanton 5원칙 진단 작업]
+
+원칙 1 — Empathy Anchor (감정이입 가능한 누군가)
+  Stanton 원문: "The story is about somebody with whom we have some empathy."
+  본질: 시청자가 누구에게 한 발 들어올 수 있는가. 그 인물이 어떤 존재이기에 공감 가능한가.
+  진단 포인트:
+    - empathy 유형: 동정형(피해자) / 동일시형(나 같은 사람) / 매혹형(나와 다르지만 끌리는) / 윤리적 양가성형(가해와 피해 경계 모호)
+    - empathy 진입점: 외적 결핍·상실 / 내적 결함 / 환경적 부당함 / 도덕적 딜레마
+    - 시청자 거리: 너무 멀면 진입 실패, 너무 가까우면 감정 과잉
+
+원칙 2 — Desire Engine (간절히 원하는 것)
+  Stanton 원문: "This somebody wants something very badly."
+  본질: 그 인물이 무엇을 원하는가. 욕망의 강도와 구체성.
+  진단 포인트:
+    - BJND 본질: 결핍(한 번도 못 가진 것) / 상실(잃은 것) / 혼합
+    - desire 대상의 구체성: 명사인가 추상인가
+    - desire 강도: 일상적 / 중대 / 절박 / 광기
+
+원칙 3 — Stakes Calibration (어렵지만 가능)
+  Stanton 원문: "This something is difficult, but possible to do, get, or achieve."
+  본질: 목표가 너무 쉬우면 지루, 너무 어려우면 포기. 그 사이 칼날 위.
+  진단 포인트:
+    - 외적 장애물 강도: 약 / 중 / 강 / 극강
+    - 내적 장애물 강도: 약 / 중 / 강 / 극강
+    - 도달 가능성: 명백히 가능 / 가능하지만 무의미 / 거의 불가능 / 정답 없음
+    - 위험: stakes가 작가 자신에게도 직관적이지 않으면 시청자에게는 더 불명확
+
+원칙 4 — Maximum Emotional Impact (최대 감정 충격)
+  Stanton 원문: "The story is told for maximum emotional impact and audience participation."
+  본질: 이 작품의 Hook(한 줄 후크)과 Punch(잊을 수 없는 한 장면)는 무엇인가.
+  진단 포인트:
+    - Hook 강도: 30초 안에 시청자가 보고 싶어지는가
+    - Punch 가시성: 본 뒤 일주일 동안 떠올릴 한 장면이 보이는가
+    - 감정 동력: 공포 / 분노 / 무력감 / 연민 / 카타르시스 / 혐오 / 경이
+    - audience participation: 시청자가 인물의 선택에 자기 자신을 투영할 지점
+
+원칙 5 — Satisfactory Ending (만족스러운 결말)
+  Stanton 원문: "The story must come to a satisfactory ending (which does not necessarily mean a happy ending)."
+  본질: 해피엔딩 ≠ 만족 결말. 인물의 변화나 진실의 발견이 카타르시스를 만든다.
+  진단 포인트:
+    - 결말 유형: 해피 / 비극 / 모호 / 폭로 / 수용 / 회복 불가능 / 의문
+    - 카타르시스 발생 메커니즘 (Aristotle): Recognition(인지) + Reversal(반전) + Pathos(고통)
+    - 작가가 결말을 알고 있는가, 모르는가 (모르면 시드 약함)
+
+[좌표 매핑 원칙]
+""" + STORY_FOUNDATION_REFERENCE_GUIDE + """
+
+[출력 JSON]
+{{
+  "principle_1_empathy_anchor": {{
+    "diagnosis": "이 아이디어의 empathy anchor를 1~2문장으로 정의",
+    "anchor_type": "동정형 | 동일시형 | 매혹형 | 윤리적 양가성형",
+    "entry_point": "감정이입 진입점 1문장",
+    "audience_distance": "너무 멀음 | 적절 | 너무 가까움",
+    "korean_reference": "한국 작품 1편 + 왜 이 좌표인가 1문장",
+    "hollywood_reference": "할리우드 작품 1편 + 왜 이 좌표인가 1문장",
+    "diagnosis_score": 0~10,
+    "improvement_note": "약점이 있으면 보강 방향 1문장"
+  }},
+  "principle_2_desire_engine": {{
+    "diagnosis": "주인공의 욕망을 1~2문장",
+    "bjnd_type": "결핍 | 상실 | 혼합",
+    "desire_target": "욕망의 구체적 대상 (명사 1~2개)",
+    "desire_intensity": "일상적 | 중대 | 절박 | 광기",
+    "korean_reference": "한국 작품 1편 + 좌표 1문장",
+    "hollywood_reference": "할리우드 작품 1편 + 좌표 1문장",
+    "diagnosis_score": 0~10,
+    "improvement_note": "1문장"
+  }},
+  "principle_3_stakes_calibration": {{
+    "diagnosis": "어렵지만 가능한가 1~2문장",
+    "external_obstacle": "약 | 중 | 강 | 극강",
+    "internal_obstacle": "약 | 중 | 강 | 극강",
+    "achievability": "명백히 가능 | 가능하지만 무의미 | 거의 불가능 | 정답 없음",
+    "korean_reference": "한국 작품 1편 + 좌표 1문장",
+    "hollywood_reference": "할리우드 작품 1편 + 좌표 1문장",
+    "diagnosis_score": 0~10,
+    "improvement_note": "1문장"
+  }},
+  "principle_4_emotional_impact": {{
+    "diagnosis": "이 작품이 어떤 감정 동력으로 작동하는가 1~2문장",
+    "hook_potential": "30초 후크 가능성 약 | 중 | 강 | 극강",
+    "punch_visibility": "잊을 수 없는 한 장면이 보이는가 명확 | 보임 | 흐림 | 안 보임",
+    "primary_emotion": "공포 | 분노 | 무력감 | 연민 | 카타르시스 | 혐오 | 경이",
+    "audience_mirror": "시청자가 자기를 투영할 지점 1문장",
+    "korean_reference": "한국 작품 1편 + 좌표 1문장",
+    "hollywood_reference": "할리우드 작품 1편 + 좌표 1문장",
+    "diagnosis_score": 0~10,
+    "improvement_note": "1문장 — 다음 단계(3-B)에서 발굴할 방향 힌트"
+  }},
+  "principle_5_satisfactory_ending": {{
+    "diagnosis": "결말의 만족도 메커니즘 1~2문장",
+    "ending_type": "해피 | 비극 | 모호 | 폭로 | 수용 | 회복 불가능 | 의문 | 미정",
+    "catharsis_mechanism": "Aristotle 카타르시스 발생 방식 1문장 (Recognition/Reversal/Pathos)",
+    "writer_knows_ending": true | false,
+    "korean_reference": "한국 작품 1편 + 좌표 1문장",
+    "hollywood_reference": "할리우드 작품 1편 + 좌표 1문장",
+    "diagnosis_score": 0~10,
+    "improvement_note": "1문장"
+  }},
+  "foundation_total_score": "5원칙 점수 합계 (50점 만점)",
+  "foundation_verdict": "GREEN (40~50 — 본질 강함) | YELLOW (30~39 — 보강 필요) | RED (29 이하 — 본질 재고)",
+  "weakest_principle": "가장 약한 원칙 1개 명시 (다음 보강 우선순위)",
+  "strongest_principle": "가장 강한 원칙 1개 명시 (이 작품의 동력)",
+  "next_step_guidance": "다음 단계(3-B Hook & Punch 발굴)에서 집중할 방향 2~3문장"
+}}
+
+[중요]
+- 5원칙 모두에서 한국 + 할리우드 좌표를 매핑한다. 매핑 작품이 같아도 좋다 (예: 〈오랜만에〉 ↔ 〈Manchester by the Sea〉가 여러 원칙에 걸쳐 매핑될 수 있음).
+- diagnosis_score는 엄격하게 채점한다. 작가에게 듣기 좋은 점수를 주지 않는다.
+- 어느 원칙이 약하면 weakest_principle에 명시해 작가가 그 약점을 인지하게 한다.
+- 5원칙이 모두 GREEN이어도, 좌표 매핑이 흐리면 시드가 약하다 — 좌표가 명확해야 본질이 명확하다.
+""" + SHARED_RULES
+
+
+STAGE_3B_HOOK_PUNCH_PROMPT = """당신은 BLUE JEANS PICTURES의 Hook & Punch 발굴 전문가다.
+앞 단계의 Stanton 5원칙 진단 결과를 받아, 작가가 자기 작품의 Hook과 Punch를 발견할 수 있도록
+정밀 질문 + 좌표 매핑을 통해 두 가지를 발굴한다.
+
+[작가의 입력]
+- 제목: {title}
+- 로그라인: {logline}
+- 원본 아이디어: {raw_idea}
+
+[앞 단계 진단 결과]
+{foundation_result}
+
+[Hook & Punch 정의]
+
+Hook = 한 줄 후크 (시청자가 듣는 순간 보고 싶어지는 것)
+  - 작품의 핵심 도발 사건 + 약속을 한 줄에 압축
+  - 〈오징어게임〉: "빚진 자들이 동심 게임으로 목숨을 건다"
+  - 〈더 글로리〉: "학교폭력 피해자가 가해자 자식의 담임이 된다"
+  - 〈Se7en〉: "은퇴 직전 형사가 일곱 죄악 연쇄살인범을 쫓는다"
+
+Punch = 한 장면 펀치 (본 뒤 잊혀지지 않는 것)
+  - 시청자가 일주일 뒤에도 떠올리는 단일 장면
+  - 〈오징어게임〉: "무궁화 꽃이 피었습니다" 첫 사망
+  - 〈더 글로리〉: 동은이 연진의 자녀를 마주하는 순간
+  - 〈Se7en〉: 박스 안의 머리
+
+[Hook 발굴 질문 5개 — 작가가 자기 답을 발견하도록]
+
+질문 H1 — "이 작품을 30초 안에 한 사람에게 설명할 때, 그가 '꼭 봐야겠다'고 말하게 만드는 한 문장은?"
+  본질: Hook의 첫 압축
+  보조 옵션 없음 — 작가 자유 작성
+
+질문 H2 — "그 한 문장의 핵심 도발은 무엇인가? (충돌 / 반전 / 금기 / 모순 중)"
+  본질: Hook의 작동 메커니즘 분류
+  보조 옵션: ["충돌 — 양립 불가능한 두 가지가 만남", "반전 — 예상의 정반대", "금기 — 보면 안 될 것을 본다", "모순 — 자기 자신과 싸움"]
+
+질문 H3 — "그 Hook이 약속하는 것은 무엇인가? 시청자는 무엇을 보게 될 것이라 기대하는가?"
+  본질: Hook의 약속 (Promise) — 작품이 끝까지 지켜야 할 것
+  보조 옵션 없음
+
+질문 H4 — "이 Hook과 가장 닮은 작품은 무엇인가? 그것과 어떻게 다른가?"
+  본질: 차별점 발굴 (Reference + Differentiation)
+  보조 옵션 없음
+
+질문 H5 — "Hook의 가장 약한 부분은 무엇이라고 생각하시나요?"
+  본질: 작가의 자기 진단 — 보강 포인트
+  보조 옵션 없음
+
+[Punch 발굴 질문 5개]
+
+질문 P1 — "관객이 이 작품을 본 뒤 일주일이 지나도 떠올릴 한 장면을 그려보세요. 어떤 장면인가요?"
+  본질: Punch 직접 발굴
+  보조 옵션 없음
+
+질문 P2 — "그 장면에 대사가 있나요, 없나요?"
+  본질: 침묵 vs 발화 — 정적 충격 / 폭발 충격
+  보조 옵션: ["대사 없음 — 정적 충격", "대사 한 마디 — 단일음 충격", "대사 여러 줄 — 폭발 충격", "내레이션·독백 — 내면 충격"]
+
+질문 P3 — "그 장면의 마지막 컷, 카메라는 무엇을 보고 있나요?"
+  본질: 시각적 서명의 출발점
+  보조 옵션 없음
+
+질문 P4 — "관객이 느낄 감정 한 단어는?"
+  본질: Punch의 정서 좌표
+  보조 옵션: ["공포", "분노", "무력감", "연민", "카타르시스", "혐오", "경이", "슬픔", "수치"]
+
+질문 P5 — "그 Punch는 작품의 어디에 배치되나요? 콜드오픈 / 미드포인트 / 클라이맥스 / 결말 직전 / 결말?"
+  본질: Punch의 작품 내 배치
+  보조 옵션: ["콜드오픈 — 작품의 첫 충격", "미드포인트 — 중간 반전", "클라이맥스 — 정점", "결말 직전 — 최후 폭로", "결말 — 마지막 이미지"]
+
+[질문 작성 원칙]
+- 작가가 답을 모르면 모른다고 답할 수 있도록 둔다.
+- 답이 모호하면 그것 자체가 시드의 약점임을 명시한다.
+- 한국·할리우드 좌표 작품을 보조 자원으로 활용 (질문 본문에 인용 가능).
+
+[좌표 매핑 원칙]
+""" + STORY_FOUNDATION_REFERENCE_GUIDE + """
+
+[출력 JSON]
+{{
+  "echo_back": "앞 단계 진단의 핵심을 1~2문장으로 재진술 (작가가 자기 결을 알아보도록)",
+  "hook_extraction_intro": "Hook 발굴 안내 1~2문장",
+  "hook_questions": [
+    {{"q_id": "H1", "principle": "Hook 첫 압축", "question": "...", "hint_options": []}},
+    {{"q_id": "H2", "principle": "작동 메커니즘", "question": "...", "hint_options": ["충돌", "반전", "금기", "모순"]}},
+    {{"q_id": "H3", "principle": "약속 발굴", "question": "...", "hint_options": []}},
+    {{"q_id": "H4", "principle": "차별점", "question": "...", "hint_options": []}},
+    {{"q_id": "H5", "principle": "자기 진단", "question": "...", "hint_options": []}}
+  ],
+  "punch_extraction_intro": "Punch 발굴 안내 1~2문장",
+  "punch_questions": [
+    {{"q_id": "P1", "principle": "Punch 직접 발굴", "question": "...", "hint_options": []}},
+    {{"q_id": "P2", "principle": "침묵 vs 발화", "question": "...", "hint_options": ["대사 없음", "대사 한 마디", "대사 여러 줄", "내레이션·독백"]}},
+    {{"q_id": "P3", "principle": "마지막 컷", "question": "...", "hint_options": []}},
+    {{"q_id": "P4", "principle": "정서 좌표", "question": "...", "hint_options": ["공포", "분노", "무력감", "연민", "카타르시스", "혐오", "경이", "슬픔", "수치"]}},
+    {{"q_id": "P5", "principle": "작품 내 배치", "question": "...", "hint_options": ["콜드오픈", "미드포인트", "클라이맥스", "결말 직전", "결말"]}}
+  ],
+  "reference_hints": {{
+    "hook_reference_korean": "이 작품 결의 한국 Hook 사례 1편 + 1문장",
+    "hook_reference_hollywood": "할리우드 Hook 사례 1편 + 1문장",
+    "punch_reference_korean": "이 작품 결의 한국 Punch 사례 1편 + 1문장",
+    "punch_reference_hollywood": "할리우드 Punch 사례 1편 + 1문장"
+  }},
+  "closing_message": "10개 질문(Hook 5 + Punch 5)에 답해주시면, Hook Signature와 Punch Scene을 빌드합니다"
+}}
+""" + SHARED_RULES
+
+
+STAGE_3B_BUILD_PROMPT = """당신은 BLUE JEANS PICTURES의 Hook & Punch 빌더다.
+작가의 10개 답변(Hook 5 + Punch 5)을 받아 Hook Signature와 Punch Scene을 빌드하고
+5축 채점에 들어갈 정제된 후크를 출력한다.
+
+[작가의 원본 입력]
+- 제목: {title}
+- 로그라인: {logline}
+- 원본 아이디어: {raw_idea}
+
+[Stanton 5원칙 진단 결과]
+{foundation_result}
+
+[작가의 Hook & Punch 10개 답변]
+{hook_punch_answers}
+
+[빌드 작업]
+
+작업 1 — Hook Signature 빌드
+  작가의 5개 Hook 답변을 통합해 작품의 Hook Signature를 4축으로 명시.
+  - hook_one_liner: 30초 후크 한 문장 (정제된 최종본)
+  - mechanism: 충돌 / 반전 / 금기 / 모순
+  - promise: Hook이 시청자에게 한 약속
+  - differentiation: 가장 닮은 작품과의 차별점
+  - weakness: 작가가 인정한 약한 부분 (보강 포인트)
+
+작업 2 — Punch Scene 빌드
+  작가의 5개 Punch 답변을 통합해 작품의 Punch Scene을 명시.
+  - scene_description: 한 장면 묘사 2~3문장
+  - dialogue_mode: 침묵 / 단일음 / 폭발 / 독백
+  - final_shot: 마지막 컷의 카메라 시선
+  - primary_emotion: 정서 좌표
+  - placement: 작품 내 배치
+  - signature_potential: 이 장면이 작품의 시각적 서명이 될 수 있는가 (HIGH/MEDIUM/LOW)
+
+작업 3 — Hook & Punch 정합 진단
+  Hook과 Punch가 같은 결인가 검증. 어긋나면 명시.
+  - alignment_check: 정합 | 부분 정합 | 어긋남
+  - alignment_reasoning: 1~2문장
+  - adjustment_needed: 정합이 아니면 어느 쪽을 조정할지 1문장
+
+작업 4 — 좌표 좌표 매핑 (최종 확정)
+  한국 작품 + 할리우드 작품 각 1편씩 명시 (Hook 좌표 기준).
+  - korean_anchor: 작품명 + 좌표 이유 1문장
+  - hollywood_anchor: 작품명 + 좌표 이유 1문장
+  - market_coordinate: "이 두 작품의 결합 = 이 작품의 시장 좌표" 1문장
+
+[좌표 매핑 원칙]
+""" + STORY_FOUNDATION_REFERENCE_GUIDE + """
+
+[출력 JSON]
+{{
+  "hook_signature": {{
+    "hook_one_liner": "30초 후크 한 문장 (정제된 최종)",
+    "mechanism": "충돌 | 반전 | 금기 | 모순",
+    "promise": "Hook의 약속 1문장",
+    "differentiation": "가장 닮은 작품과의 차별점 1~2문장",
+    "weakness": "작가가 인정한 약한 부분 1문장"
+  }},
+  "punch_scene": {{
+    "scene_description": "한 장면 묘사 2~3문장",
+    "dialogue_mode": "침묵 | 단일음 | 폭발 | 독백",
+    "final_shot": "마지막 컷의 카메라 시선 1문장",
+    "primary_emotion": "정서 좌표 1단어",
+    "placement": "콜드오픈 | 미드포인트 | 클라이맥스 | 결말 직전 | 결말",
+    "signature_potential": "HIGH | MEDIUM | LOW"
+  }},
+  "alignment_diagnosis": {{
+    "alignment_check": "정합 | 부분 정합 | 어긋남",
+    "alignment_reasoning": "1~2문장",
+    "adjustment_needed": "정합 아니면 조정 방향 1문장"
+  }},
+  "anchor_mapping": {{
+    "korean_anchor": "한국 작품 + 좌표 이유 1문장",
+    "hollywood_anchor": "할리우드 작품 + 좌표 이유 1문장",
+    "market_coordinate": "두 작품의 결합 좌표 1문장"
+  }},
+  "stage_3c_ready": true,
+  "next_step": "5축 채점(구체성/갈등/장르/판돈/독창성)으로 이동합니다. 발굴된 Hook & Punch가 채점 정확도를 끌어올립니다."
+}}
+
+[중요]
+- Hook Signature와 Punch Scene이 Stage 7 LOCKED 시드에 그대로 박힌다 — Creator Engine이 받아서 콜드오픈·결말·시각적 서명을 빌드한다.
+- alignment_check가 "어긋남"이면 작가에게 명시적으로 보강 안내한다 — TRIAGE에서 CONDITIONAL 가능성 명시.
+- 좌표 매핑은 명료하게. 작품 나열 금지.
+""" + SHARED_RULES

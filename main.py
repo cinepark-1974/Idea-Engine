@@ -304,7 +304,8 @@ with st.sidebar:
         <div style="font-size:.7rem;color:#666;margin-top:8px;">
             Build: {ENGINE_BUILD_DATE}<br>
             HUNTER 발굴 + TRIAGE 진단<br>
-            <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합</span>
+            <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합 5키</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.2 Stanton 5원칙 · Hook&Punch 4키</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1194,10 +1195,16 @@ def build_seed_json(state: Dict[str, Any]) -> str:
     seed.setdefault("locked_ending_form", {})
     seed.setdefault("locked_creator_questions", [])
 
+    # ─── v1.2: Stanton 5원칙 + Hook & Punch 발굴 4개 신규 키 ───
+    seed.setdefault("locked_empathy_anchor", {})
+    seed.setdefault("locked_hook_signature", {})
+    seed.setdefault("locked_punch_scene", {})
+    seed.setdefault("locked_ending_promise", {})
+
     creator_input = {
         "_idea_engine_meta": {
             "version": ENGINE_VERSION,
-            "patch": "v1.1 (Creator Engine v2.5.2 정합 5키)",
+            "patch": "v1.2 (Stanton 5원칙 + Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
             "generated_at": datetime.now().isoformat(),
             "project_id": seed.get("project_id", ""),
             "verdict": state["stage_7_verdict"].get("final_verdict", ""),
@@ -1412,22 +1419,238 @@ def page_stage_2():
 
 
 def page_stage_3():
-    section_header("🎯 STEP 3 · 후크 진단", "GATE 0 · 5-AXIS SCORING")
-    small_meta("5축 × 10점 = 50점 만점으로 채점. 35점 이상 PASS / 25~34 CONDITIONAL / 24 이하 FAIL.")
-    
+    """Stage 3 격상판 (v1.2) — Stanton 5원칙 → Hook & Punch 발굴 → 5축 채점"""
+    section_header("🎯 STEP 3 · 후크 진단", "FOUNDATION → HOOK & PUNCH → SCORING")
+    small_meta(
+        "Andrew Stanton 5원칙으로 본질 진단 → Hook & Punch 발굴 → 5축 채점의 3단 구조. "
+        "한국 + 할리우드 좌표가 자동 매핑됩니다."
+    )
+
     inp = st.session_state["stage_1_input"]
     logline = st.session_state.get("selected_logline", "")
-    
-    if not st.session_state.get("stage_3_hook"):
-        if st.button("🎯 Hook 진단 실행", type="primary", use_container_width=True):
+
+    # 진행 상태 표시 (3단 stepper)
+    foundation_done = bool(st.session_state.get("stage_3_foundation"))
+    hp_built_done = bool(st.session_state.get("stage_3_hook_punch_built"))
+    scoring_done = bool(st.session_state.get("stage_3_hook"))
+
+    cstep_a, cstep_b, cstep_c = st.columns(3)
+    with cstep_a:
+        st.markdown(
+            f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if foundation_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;">
+            {'✓' if foundation_done else '①'} 3-A · Stanton 5원칙
+            </div>""", unsafe_allow_html=True)
+    with cstep_b:
+        st.markdown(
+            f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if hp_built_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;">
+            {'✓' if hp_built_done else '②'} 3-B · Hook & Punch
+            </div>""", unsafe_allow_html=True)
+    with cstep_c:
+        st.markdown(
+            f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if scoring_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;">
+            {'✓' if scoring_done else '③'} 3-C · 5축 채점
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ════════════════════════════════════════════════════════
+    # 3-A: Stanton 5원칙 진단
+    # ════════════════════════════════════════════════════════
+    if not foundation_done:
+        st.markdown("### 🎬 3-A · Stanton 5원칙 진단")
+        st.markdown(
+            '<div class="callout">'
+            'Andrew Stanton (Pixar)의 스토리텔링 5원칙으로 본질을 진단합니다. '
+            'Empathy Anchor · Desire Engine · Stakes Calibration · Emotional Impact · Satisfactory Ending — '
+            '각 원칙마다 한국·할리우드 좌표 작품이 자동 매핑됩니다.'
+            '</div>', unsafe_allow_html=True)
+
+        if st.button("🎬 Stanton 5원칙 진단 실행", type="primary", use_container_width=True):
             client = get_anthropic_client()
             if not client:
                 st.warning("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
                 return
-            with st.spinner("Sonnet이 5축 진단 중..."):
+            with st.spinner("Sonnet이 Stanton 5원칙 + 한국·할리우드 좌표 매핑 중... (30~60초)"):
+                prompt_text = P.STAGE_3A_STORY_FOUNDATION_PROMPT.format(
+                    title=inp["title"], logline=logline,
+                    genre=inp["genre"], target_market=inp["target_market"],
+                    format=inp["format"], raw_idea=inp["raw_idea"],
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                    return
+                st.session_state["stage_3_foundation"] = result
+                st.rerun()
+
+        # 이전 / 백업
+        st.markdown("---")
+        cb, _ = st.columns([1, 3])
+        with cb:
+            if st.button("← 이전"):
+                st.session_state["current_stage"] = 2
+                st.rerun()
+        render_progress_save_button(stage_num=3)
+        return
+
+    # 3-A 결과 표시
+    foundation = st.session_state["stage_3_foundation"]
+    _render_foundation_result(foundation)
+
+    # ════════════════════════════════════════════════════════
+    # 3-B: Hook & Punch 발굴 (질문지 생성 + 답변 + 빌드)
+    # ════════════════════════════════════════════════════════
+    if not hp_built_done:
+        st.markdown("---")
+        st.markdown("### 🎯 3-B · Hook & Punch 발굴")
+
+        # 3-B 질문지 생성 (한 번만)
+        hp_questions = st.session_state.get("stage_3_hook_punch_questions")
+        if not hp_questions:
+            st.markdown(
+                '<div class="callout">'
+                '5원칙 진단을 바탕으로, 이 작품의 <b>Hook(한 줄 후크)</b>과 <b>Punch(잊을 수 없는 한 장면)</b>를 발굴합니다. '
+                '10개 질문에 답해주시면 Hook Signature와 Punch Scene이 빌드됩니다.'
+                '</div>', unsafe_allow_html=True)
+
+            if st.button("📝 Hook & Punch 질문지 생성 (Sonnet)", type="primary", use_container_width=True):
+                client = get_anthropic_client()
+                with st.spinner("Sonnet이 Hook 5문 + Punch 5문 생성 중... (20~40초)"):
+                    prompt_text = P.STAGE_3B_HOOK_PUNCH_PROMPT.format(
+                        title=inp["title"], logline=logline, raw_idea=inp["raw_idea"],
+                        foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                    )
+                    result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                    if result.get("_parse_error"):
+                        st.error("응답 파싱 실패")
+                        with st.expander("Raw 응답"):
+                            st.text(result.get("_raw", ""))
+                        return
+                    st.session_state["stage_3_hook_punch_questions"] = result
+                    st.rerun()
+
+            _stage3_back_buttons()
+            return
+
+        # 질문지 표시 + 답변 입력
+        echo = hp_questions.get("echo_back", "")
+        if echo:
+            st.markdown(f'<div class="callout"><b>진단 종합:</b> {echo}</div>', unsafe_allow_html=True)
+
+        # Reference Hints 표시
+        hints = hp_questions.get("reference_hints", {})
+        if hints:
+            with st.expander("💡 참고 좌표 (한국 + 할리우드)", expanded=False):
+                st.markdown(f"**Hook 좌표 — 한국:** {hints.get('hook_reference_korean', '')}")
+                st.markdown(f"**Hook 좌표 — 할리우드:** {hints.get('hook_reference_hollywood', '')}")
+                st.markdown(f"**Punch 좌표 — 한국:** {hints.get('punch_reference_korean', '')}")
+                st.markdown(f"**Punch 좌표 — 할리우드:** {hints.get('punch_reference_hollywood', '')}")
+
+        st.markdown("#### 🎣 Hook 발굴 5문")
+        hook_intro = hp_questions.get("hook_extraction_intro", "")
+        if hook_intro:
+            st.caption(hook_intro)
+
+        hook_answers = {}
+        for q in hp_questions.get("hook_questions", []):
+            qid = q.get("q_id", "")
+            st.markdown(f"**{qid}. {q.get('question', '')}**")
+            principle = q.get("principle", "")
+            if principle:
+                st.caption(f"본질: {principle}")
+            hints_q = q.get("hint_options", []) or []
+            if hints_q:
+                st.caption("보조 옵션: " + " · ".join(hints_q))
+            answer = st.text_area(
+                f"답변 {qid}", key=f"s3b_{qid}", height=70,
+                label_visibility="collapsed",
+                placeholder="자유롭게 작성하시거나 보조 옵션 중에서 선택하세요.",
+            )
+            hook_answers[qid] = answer
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+        st.markdown("#### 💥 Punch 발굴 5문")
+        punch_intro = hp_questions.get("punch_extraction_intro", "")
+        if punch_intro:
+            st.caption(punch_intro)
+
+        punch_answers = {}
+        for q in hp_questions.get("punch_questions", []):
+            qid = q.get("q_id", "")
+            st.markdown(f"**{qid}. {q.get('question', '')}**")
+            principle = q.get("principle", "")
+            if principle:
+                st.caption(f"본질: {principle}")
+            hints_q = q.get("hint_options", []) or []
+            if hints_q:
+                st.caption("보조 옵션: " + " · ".join(hints_q))
+            answer = st.text_area(
+                f"답변 {qid}", key=f"s3b_{qid}", height=70,
+                label_visibility="collapsed",
+                placeholder="자유롭게 작성하시거나 보조 옵션 중에서 선택하세요.",
+            )
+            punch_answers[qid] = answer
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+        if st.button("🎯 Hook Signature + Punch Scene 빌드 (Sonnet)", type="primary", use_container_width=True):
+            # 답변 통합
+            all_answers = {**hook_answers, **punch_answers}
+            empty = [k for k, v in all_answers.items() if not v.strip()]
+            if empty:
+                st.warning(f"미답변: {', '.join(empty)} — 10문 모두 답해주세요.")
+                return
+
+            st.session_state["stage_3_hook_punch_answers"] = all_answers
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 Hook Signature + Punch Scene 빌드 중... (30~50초)"):
+                prompt_text = P.STAGE_3B_BUILD_PROMPT.format(
+                    title=inp["title"], logline=logline, raw_idea=inp["raw_idea"],
+                    foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                    hook_punch_answers=json.dumps(all_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                    return
+                st.session_state["stage_3_hook_punch_built"] = result
+                st.rerun()
+
+        _stage3_back_buttons()
+        return
+
+    # 3-B 결과 표시
+    hp_built = st.session_state["stage_3_hook_punch_built"]
+    _render_hook_punch_result(hp_built)
+
+    # ════════════════════════════════════════════════════════
+    # 3-C: 5축 채점 (기존 Hook Diagnostic)
+    # ════════════════════════════════════════════════════════
+    if not scoring_done:
+        st.markdown("---")
+        st.markdown("### 📊 3-C · 5축 채점")
+        st.markdown(
+            '<div class="callout">'
+            '발굴된 Hook & Punch를 바탕으로 5축(구체성 · 갈등 가시성 · 장르 명확성 · 판돈 · 독창성) 채점을 진행합니다. '
+            '발굴 단계를 거쳐서 채점 정확도가 향상됩니다.'
+            '</div>', unsafe_allow_html=True)
+
+        if st.button("📊 5축 채점 실행 (Sonnet)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 5축 채점 중... (20~30초)"):
+                # 채점에 발굴된 Hook을 함께 전달 (정확도 ↑)
+                hook_one_liner = hp_built.get("hook_signature", {}).get("hook_one_liner", "")
+                enriched_idea = inp["raw_idea"]
+                if hook_one_liner:
+                    enriched_idea += f"\n\n[발굴된 Hook]: {hook_one_liner}"
+
                 prompt_text = P.HOOK_DIAGNOSTIC_PROMPT.format(
                     title=inp["title"], logline=logline,
-                    genre=inp["genre"], format=inp["format"], raw_idea=inp["raw_idea"],
+                    genre=inp["genre"], format=inp["format"], raw_idea=enriched_idea,
                 )
                 result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
                 if result.get("_parse_error"):
@@ -1435,104 +1658,303 @@ def page_stage_3():
                     return
                 st.session_state["stage_3_hook"] = result
                 st.rerun()
-    else:
-        hk = st.session_state["stage_3_hook"]
-        scores = hk.get("scores", {})
-        axis_kr = {
-            "specificity": "구체성", "conflict_visibility": "갈등 가시성",
-            "genre_clarity": "장르 명확성", "stakes": "판돈", "originality": "독창성"
-        }
-        
-        categories = list(axis_kr.values())
-        values = [scores.get(k, {}).get("score", 0) for k in axis_kr.keys()]
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(
-            r=values, theta=categories, fill='toself', name='Hook Score',
-            line=dict(color='#191970', width=2),
-            fillcolor='rgba(255, 203, 5, 0.4)'
-        ))
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(visible=True, range=[0, 10], tickfont=dict(size=10)),
-                angularaxis=dict(tickfont=dict(size=12, family='Pretendard'))
-            ),
-            showlegend=False, height=400, margin=dict(l=80, r=80, t=40, b=40),
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
-        )
-        
-        cc, cs = st.columns([1, 1])
-        with cc:
-            st.plotly_chart(fig, use_container_width=True)
-        with cs:
-            total = hk.get("total_score", 0)
-            status = hk.get("gate_status", "")
-            st.markdown(f"""
-            <div class="metric-tile">
-                <div class="num">{total}/50</div>
-                <div class="label">TOTAL HOOK SCORE</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if status == "PASS":
-                st.success(f"🟢 **{status}** — 35점 이상으로 GO 진행 가능")
-            elif status == "CONDITIONAL":
-                st.warning(f"🟡 **{status}** — 약점 보강 필요")
-            else:
-                st.error(f"🔴 **{status}** — 재고 권장")
-        
-        st.markdown("**축별 진단**")
-        for k, kr in axis_kr.items():
-            sc = scores.get(k, {})
-            score = sc.get("score", 0)
-            cls = "pass" if score >= 7 else "warn" if score >= 5 else "fail"
-            st.markdown(f"""
-            <div class="score-card {cls}">
-                <span class="axis-name">{kr}</span>
-                <span class="axis-score">{score}/10</span>
-                <div class="axis-comment">{sc.get('comment', '')}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        st.markdown("---")
-        cs1, cw1 = st.columns(2)
-        with cs1:
-            st.markdown("**핵심 강점**")
-            for s in hk.get("key_strengths", []):
-                st.markdown(f"- {s}")
-        with cw1:
-            st.markdown("**핵심 약점**")
-            for w in hk.get("key_weaknesses", []):
-                st.markdown(f"- {w}")
-        
-        st.markdown("**보강 제안**")
-        for s in hk.get("improvement_suggestions", []):
-            st.markdown(f"- {s}")
-        
-        st.markdown("---")
-        cb, cr, cn = st.columns([1, 1, 2])
-        with cb:
-            if st.button("← 이전"):
-                st.session_state["current_stage"] = 2
-                st.rerun()
-        with cr:
-            if st.button("재실행"):
-                st.session_state["stage_3_hook"] = None
-                st.rerun()
-        with cn:
-            if status == "FAIL":
-                st.error("🔴 FAIL — Override 시 진행 가능")
-                if st.button("⚠ Override하고 Format으로 →", use_container_width=True):
-                    st.session_state["current_stage"] = 4
-                    st.rerun()
-            else:
-                if st.button("Format 추천으로 →", type="primary", use_container_width=True):
-                    st.session_state["current_stage"] = 4
-                    st.rerun()
 
-        # ── 진행 상태 백업 ──
-        st.markdown("---")
-        render_progress_save_button(stage_num=3)
+        _stage3_back_buttons()
+        return
+
+    # 3-C 결과 표시 — 기존 채점 UI
+    hk = st.session_state["stage_3_hook"]
+    st.markdown("---")
+    st.markdown("### 📊 3-C · 5축 채점 결과")
+    _render_scoring_result(hk)
+
+    # 다음 단계 / 이전 / 재실행
+    status = hk.get("gate_status", "")
+    st.markdown("---")
+    cb, cr, cn = st.columns([1, 1, 2])
+    with cb:
+        if st.button("← 이전"):
+            st.session_state["current_stage"] = 2
+            st.rerun()
+    with cr:
+        if st.button("재실행 (3-C만)"):
+            st.session_state["stage_3_hook"] = None
+            st.rerun()
+    with cn:
+        if status == "FAIL":
+            st.error("🔴 FAIL — Override 시 진행 가능")
+            if st.button("⚠ Override하고 Format으로 →", use_container_width=True):
+                st.session_state["current_stage"] = 4
+                st.rerun()
+        else:
+            if st.button("Format 추천으로 →", type="primary", use_container_width=True):
+                st.session_state["current_stage"] = 4
+                st.rerun()
+
+    # 3-A·3-B 재실행 옵션
+    with st.expander("🔄 이전 단계 다시 하기", expanded=False):
+        cr_a, cr_b = st.columns(2)
+        with cr_a:
+            if st.button("3-A Stanton 5원칙 재실행", key="rerun_3a"):
+                for k in ["stage_3_foundation", "stage_3_hook_punch_questions",
+                          "stage_3_hook_punch_answers", "stage_3_hook_punch_built", "stage_3_hook"]:
+                    st.session_state[k] = None
+                st.rerun()
+        with cr_b:
+            if st.button("3-B Hook&Punch 재실행", key="rerun_3b"):
+                for k in ["stage_3_hook_punch_questions", "stage_3_hook_punch_answers",
+                          "stage_3_hook_punch_built", "stage_3_hook"]:
+                    st.session_state[k] = None
+                st.rerun()
+
+    # ── 진행 상태 백업 ──
+    st.markdown("---")
+    render_progress_save_button(stage_num=3)
+
+
+def _stage3_back_buttons():
+    """Stage 3 진행 중 사용하는 공통 뒤로/백업 버튼."""
+    st.markdown("---")
+    cb, _ = st.columns([1, 3])
+    with cb:
+        if st.button("← 이전"):
+            st.session_state["current_stage"] = 2
+            st.rerun()
+    render_progress_save_button(stage_num=3)
+
+
+def _render_foundation_result(foundation):
+    """3-A Stanton 5원칙 결과 렌더링."""
+    st.markdown("### 🎬 3-A · Stanton 5원칙 진단 결과")
+
+    total = foundation.get("foundation_total_score", 0)
+    verdict = foundation.get("foundation_verdict", "")
+    weakest = foundation.get("weakest_principle", "")
+    strongest = foundation.get("strongest_principle", "")
+
+    # 총점 + 판정
+    col_score, col_verdict = st.columns([1, 2])
+    with col_score:
+        st.markdown(f"""
+        <div class="metric-tile">
+            <div class="num">{total}/50</div>
+            <div class="label">FOUNDATION SCORE</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_verdict:
+        if "GREEN" in verdict.upper() or "40" in verdict:
+            st.success(f"🟢 {verdict}")
+        elif "YELLOW" in verdict.upper() or "30" in verdict:
+            st.warning(f"🟡 {verdict}")
+        else:
+            st.error(f"🔴 {verdict}")
+        st.caption(f"**가장 강함:** {strongest} · **가장 약함:** {weakest}")
+
+    # 5원칙 카드
+    principles_meta = [
+        ("principle_1_empathy_anchor", "① Empathy Anchor", "감정이입 가능한 누군가"),
+        ("principle_2_desire_engine", "② Desire Engine", "간절히 원하는 것"),
+        ("principle_3_stakes_calibration", "③ Stakes Calibration", "어렵지만 가능"),
+        ("principle_4_emotional_impact", "④ Emotional Impact", "최대 감정 충격"),
+        ("principle_5_satisfactory_ending", "⑤ Satisfactory Ending", "만족스러운 결말"),
+    ]
+
+    for key, label, sub in principles_meta:
+        p = foundation.get(key, {})
+        score = p.get("diagnosis_score", 0)
+        bg = "#E8F5E9" if score >= 7 else "#FFF8E1" if score >= 5 else "#FFEBEE"
+        border = "#2E7D32" if score >= 7 else "#F57F17" if score >= 5 else "#C62828"
+
+        with st.expander(f"{label} — {sub} · {score}/10", expanded=False):
+            st.markdown(f"<div style='background:{bg};border-left:3px solid {border};padding:10px;border-radius:6px;margin-bottom:8px;'>"
+                       f"<b>진단:</b> {p.get('diagnosis', '')}</div>", unsafe_allow_html=True)
+
+            # 원칙별 메타데이터
+            if key == "principle_1_empathy_anchor":
+                st.markdown(f"- **타입:** {p.get('anchor_type', '')}")
+                st.markdown(f"- **진입점:** {p.get('entry_point', '')}")
+                st.markdown(f"- **시청자 거리:** {p.get('audience_distance', '')}")
+            elif key == "principle_2_desire_engine":
+                st.markdown(f"- **BJND:** {p.get('bjnd_type', '')}")
+                st.markdown(f"- **욕망 대상:** {p.get('desire_target', '')}")
+                st.markdown(f"- **강도:** {p.get('desire_intensity', '')}")
+            elif key == "principle_3_stakes_calibration":
+                st.markdown(f"- **외적 장애물:** {p.get('external_obstacle', '')}")
+                st.markdown(f"- **내적 장애물:** {p.get('internal_obstacle', '')}")
+                st.markdown(f"- **도달 가능성:** {p.get('achievability', '')}")
+            elif key == "principle_4_emotional_impact":
+                st.markdown(f"- **Hook 가능성:** {p.get('hook_potential', '')}")
+                st.markdown(f"- **Punch 가시성:** {p.get('punch_visibility', '')}")
+                st.markdown(f"- **주요 감정:** {p.get('primary_emotion', '')}")
+                st.markdown(f"- **시청자 거울:** {p.get('audience_mirror', '')}")
+            elif key == "principle_5_satisfactory_ending":
+                st.markdown(f"- **결말 유형:** {p.get('ending_type', '')}")
+                st.markdown(f"- **카타르시스:** {p.get('catharsis_mechanism', '')}")
+                st.markdown(f"- **작가 결말 인지:** {'✓' if p.get('writer_knows_ending') else '✗ (미정)'}")
+
+            # 좌표 매핑
+            kr_ref = p.get("korean_reference", "")
+            hw_ref = p.get("hollywood_reference", "")
+            if kr_ref or hw_ref:
+                st.markdown("**좌표 매핑:**")
+                if kr_ref:
+                    st.markdown(f"  🇰🇷 {kr_ref}")
+                if hw_ref:
+                    st.markdown(f"  🇺🇸 {hw_ref}")
+
+            improvement = p.get("improvement_note", "")
+            if improvement:
+                st.caption(f"💡 보강 방향: {improvement}")
+
+    # 다음 단계 안내
+    next_step = foundation.get("next_step_guidance", "")
+    if next_step:
+        st.markdown(f'<div class="callout"><b>다음 단계:</b> {next_step}</div>', unsafe_allow_html=True)
+
+
+def _render_hook_punch_result(hp_built):
+    """3-B Hook & Punch 빌드 결과 렌더링."""
+    st.markdown("---")
+    st.markdown("### 🎯 3-B · Hook Signature + Punch Scene")
+
+    # Hook Signature 카드
+    hs = hp_built.get("hook_signature", {})
+    st.markdown(f"""
+    <div style="border:2px solid #191970;border-radius:12px;padding:18px;background:#F0F2FF;margin-bottom:12px;">
+        <div style="display:inline-block;background:#191970;color:#FFCB05;font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:999px;">🎣 HOOK SIGNATURE</div>
+        <div style="font-family:'Playfair Display',serif;font-size:1.15rem;font-weight:700;color:#191970;margin-top:10px;line-height:1.4;">
+            "{hs.get('hook_one_liner', '')}"
+        </div>
+        <div style="margin-top:10px;font-size:.85rem;color:#555;">
+            <b>메커니즘:</b> {hs.get('mechanism', '')}<br>
+            <b>약속:</b> {hs.get('promise', '')}<br>
+            <b>차별점:</b> {hs.get('differentiation', '')}
+        </div>
+        {f'<div style="margin-top:8px;font-size:.78rem;color:#C62828;font-style:italic;">⚠ 약점: {hs.get("weakness", "")}</div>' if hs.get('weakness') else ''}
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Punch Scene 카드
+    ps = hp_built.get("punch_scene", {})
+    sig_pot = ps.get("signature_potential", "MEDIUM")
+    sig_color = "#2E7D32" if sig_pot == "HIGH" else "#F57F17" if sig_pot == "MEDIUM" else "#999"
+
+    st.markdown(f"""
+    <div style="border:2px solid #FFCB05;border-radius:12px;padding:18px;background:#FFFEF5;margin-bottom:12px;">
+        <div style="display:inline-block;background:#FFCB05;color:#191970;font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:999px;">💥 PUNCH SCENE</div>
+        <div style="margin-top:10px;font-size:.95rem;color:#1A1A2E;line-height:1.6;">
+            {ps.get('scene_description', '')}
+        </div>
+        <div style="margin-top:10px;font-size:.85rem;color:#555;">
+            <b>대사 모드:</b> {ps.get('dialogue_mode', '')} ·
+            <b>마지막 컷:</b> {ps.get('final_shot', '')}<br>
+            <b>정서:</b> {ps.get('primary_emotion', '')} ·
+            <b>배치:</b> {ps.get('placement', '')}
+        </div>
+        <div style="margin-top:8px;font-size:.78rem;color:{sig_color};font-weight:700;">
+            ★ 시각적 서명 가능성: {sig_pot}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 정합 진단
+    align = hp_built.get("alignment_diagnosis", {})
+    align_check = align.get("alignment_check", "")
+    if align_check:
+        if "정합" == align_check:
+            st.success(f"✓ **Hook ↔ Punch 정합** — {align.get('alignment_reasoning', '')}")
+        elif "부분" in align_check:
+            st.warning(f"🟡 **부분 정합** — {align.get('alignment_reasoning', '')}")
+            if align.get("adjustment_needed"):
+                st.caption(f"조정 방향: {align['adjustment_needed']}")
+        else:
+            st.error(f"🔴 **어긋남** — {align.get('alignment_reasoning', '')}")
+            if align.get("adjustment_needed"):
+                st.caption(f"조정 방향: {align['adjustment_needed']}")
+
+    # 좌표 매핑
+    anchor = hp_built.get("anchor_mapping", {})
+    if anchor:
+        with st.expander("📍 최종 좌표 매핑", expanded=True):
+            st.markdown(f"🇰🇷 **한국 좌표:** {anchor.get('korean_anchor', '')}")
+            st.markdown(f"🇺🇸 **할리우드 좌표:** {anchor.get('hollywood_anchor', '')}")
+            if anchor.get("market_coordinate"):
+                st.markdown(f'<div class="callout"><b>시장 좌표:</b> {anchor["market_coordinate"]}</div>', unsafe_allow_html=True)
+
+
+def _render_scoring_result(hk):
+    """3-C 5축 채점 결과 렌더링 (기존 UI 유지)."""
+    scores = hk.get("scores", {})
+    axis_kr = {
+        "specificity": "구체성", "conflict_visibility": "갈등 가시성",
+        "genre_clarity": "장르 명확성", "stakes": "판돈", "originality": "독창성"
+    }
+
+    categories = list(axis_kr.values())
+    values = [scores.get(k, {}).get("score", 0) for k in axis_kr.keys()]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=values, theta=categories, fill='toself', name='Hook Score',
+        line=dict(color='#191970', width=2),
+        fillcolor='rgba(255, 203, 5, 0.4)'
+    ))
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 10], tickfont=dict(size=10)),
+            angularaxis=dict(tickfont=dict(size=12, family='Pretendard'))
+        ),
+        showlegend=False, height=400, margin=dict(l=80, r=80, t=40, b=40),
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+    )
+
+    cc, cs = st.columns([1, 1])
+    with cc:
+        st.plotly_chart(fig, use_container_width=True)
+    with cs:
+        total = hk.get("total_score", 0)
+        status = hk.get("gate_status", "")
+        st.markdown(f"""
+        <div class="metric-tile">
+            <div class="num">{total}/50</div>
+            <div class="label">TOTAL HOOK SCORE</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if status == "PASS":
+            st.success(f"🟢 **{status}** — 35점 이상으로 GO 진행 가능")
+        elif status == "CONDITIONAL":
+            st.warning(f"🟡 **{status}** — 약점 보강 필요")
+        else:
+            st.error(f"🔴 **{status}** — 재고 권장")
+
+    st.markdown("**축별 진단**")
+    for k, kr in axis_kr.items():
+        sc = scores.get(k, {})
+        score = sc.get("score", 0)
+        cls = "pass" if score >= 7 else "warn" if score >= 5 else "fail"
+        st.markdown(f"""
+        <div class="score-card {cls}">
+            <span class="axis-name">{kr}</span>
+            <span class="axis-score">{score}/10</span>
+            <div class="axis-comment">{sc.get('comment', '')}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    cs1, cw1 = st.columns(2)
+    with cs1:
+        st.markdown("**핵심 강점**")
+        for s in hk.get("key_strengths", []):
+            st.markdown(f"- {s}")
+    with cw1:
+        st.markdown("**핵심 약점**")
+        for w in hk.get("key_weaknesses", []):
+            st.markdown(f"- {w}")
+
+    st.markdown("**보강 제안**")
+    for s in hk.get("improvement_suggestions", []):
+        st.markdown(f"- {s}")
 
 
 def page_stage_4():
@@ -2056,6 +2478,90 @@ def page_stage_7():
                             st.caption(f"후보: {' / '.join(str(o) for o in options)}")
                     elif isinstance(q, str):
                         st.markdown(f"- {q}")
+
+        # ────────────────────────────────────────────────────
+        # v1.2 신규 4개 LOCKED 영역 (Stanton 5원칙 + Hook&Punch)
+        # ────────────────────────────────────────────────────
+        # ⑥ locked_empathy_anchor
+        empathy = seed.get("locked_empathy_anchor", {}) or {}
+        with st.expander(
+            f"⑥ Empathy Anchor (locked_empathy_anchor · v1.2) · {'있음' if empathy else '없음'}",
+            expanded=bool(empathy),
+        ):
+            if not empathy:
+                st.caption("이 시드는 v1.1 이전 버전입니다 (빈 객체). v1.2 신규 키 미적용.")
+            elif isinstance(empathy, dict):
+                if empathy.get("anchor_type"):
+                    st.markdown(f"**감정이입 유형**: {empathy['anchor_type']}")
+                if empathy.get("entry_point"):
+                    st.markdown(f"**진입점**: {empathy['entry_point']}")
+                if empathy.get("korean_reference"):
+                    st.markdown(f"🇰🇷 **한국 좌표**: {empathy['korean_reference']}")
+                if empathy.get("hollywood_reference"):
+                    st.markdown(f"🇺🇸 **할리우드 좌표**: {empathy['hollywood_reference']}")
+
+        # ⑦ locked_hook_signature
+        hook_sig = seed.get("locked_hook_signature", {}) or {}
+        with st.expander(
+            f"⑦ Hook Signature (locked_hook_signature · v1.2) · {'있음' if hook_sig else '없음'}",
+            expanded=bool(hook_sig),
+        ):
+            if not hook_sig:
+                st.caption("Hook Signature가 LOCK되지 않았습니다 (v1.1 이전 시드).")
+            elif isinstance(hook_sig, dict):
+                if hook_sig.get("hook_one_liner"):
+                    st.markdown(f'<div style="background:#F0F2FF;border-left:3px solid #191970;padding:10px;font-weight:600;font-size:1.05rem;">"{hook_sig["hook_one_liner"]}"</div>', unsafe_allow_html=True)
+                if hook_sig.get("mechanism"):
+                    st.markdown(f"**메커니즘**: {hook_sig['mechanism']}")
+                if hook_sig.get("promise"):
+                    st.markdown(f"**약속**: {hook_sig['promise']}")
+                if hook_sig.get("differentiation"):
+                    st.markdown(f"**차별점**: {hook_sig['differentiation']}")
+
+        # ⑧ locked_punch_scene
+        punch = seed.get("locked_punch_scene", {}) or {}
+        with st.expander(
+            f"⑧ Punch Scene (locked_punch_scene · v1.2) · {'있음' if punch else '없음'}",
+            expanded=bool(punch),
+        ):
+            if not punch:
+                st.caption("Punch Scene이 LOCK되지 않았습니다 (v1.1 이전 시드).")
+            elif isinstance(punch, dict):
+                if punch.get("scene_description"):
+                    st.markdown(f'<div style="background:#FFFEF5;border-left:3px solid #FFCB05;padding:10px;font-size:.95rem;line-height:1.6;">{punch["scene_description"]}</div>', unsafe_allow_html=True)
+                meta_cols = []
+                if punch.get("dialogue_mode"):
+                    meta_cols.append(f"**대사 모드**: {punch['dialogue_mode']}")
+                if punch.get("final_shot"):
+                    meta_cols.append(f"**마지막 컷**: {punch['final_shot']}")
+                if punch.get("primary_emotion"):
+                    meta_cols.append(f"**정서**: {punch['primary_emotion']}")
+                if punch.get("placement"):
+                    meta_cols.append(f"**배치**: {punch['placement']}")
+                for line in meta_cols:
+                    st.markdown(line)
+                if punch.get("signature_potential"):
+                    sp = punch["signature_potential"]
+                    color = {"HIGH": "#2E7D32", "MEDIUM": "#F9A825", "LOW": "#999"}.get(sp, "#666")
+                    st.markdown(f"<span style='color:{color};font-weight:700;'>★ 시각적 서명 가능성: {sp}</span>", unsafe_allow_html=True)
+
+        # ⑨ locked_ending_promise
+        ending_promise = seed.get("locked_ending_promise", {}) or {}
+        with st.expander(
+            f"⑨ Ending Promise (locked_ending_promise · v1.2) · {'있음' if ending_promise else '없음'}",
+            expanded=bool(ending_promise),
+        ):
+            if not ending_promise:
+                st.caption("결말 약속이 LOCK되지 않았습니다 (v1.1 이전 시드).")
+            elif isinstance(ending_promise, dict):
+                if ending_promise.get("ending_type"):
+                    st.markdown(f"**결말 유형**: {ending_promise['ending_type']}")
+                if ending_promise.get("catharsis_mechanism"):
+                    st.markdown(f"**카타르시스 메커니즘**: {ending_promise['catharsis_mechanism']}")
+                if ending_promise.get("writer_intent"):
+                    st.markdown(f"**작가 의도**: {ending_promise['writer_intent']}")
+                if ending_promise.get("satisfactory_logic"):
+                    st.markdown(f"**만족 결말 논리**: {ending_promise['satisfactory_logic']}")
 
         st.markdown("---")
         section_header("⬇ STEP 8 · 다운로드", "EXPORT")
