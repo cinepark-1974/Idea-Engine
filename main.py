@@ -40,8 +40,8 @@ import prompt as P
 # Engine Info
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
-ENGINE_BUILD_DATE = "2026-05-05"
-ENGINE_PATCH_LEVEL = "v2.0 (HUNTER 골격) + v1.1 패치 (Creator Engine v2.5.2 정합 5키)"
+ENGINE_BUILD_DATE = "2026-05-17"
+ENGINE_PATCH_LEVEL = "v2.0 (HUNTER 골격) + v1.3.1 패치 (Period Pack v2.5.0 정합 — 13개 시대)"
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -306,7 +306,8 @@ with st.sidebar:
             HUNTER 발굴 + TRIAGE 진단<br>
             <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합 5키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.2 Stanton 5원칙 · Hook&Punch 4키</span><br>
-            <span style="color:#191970;font-weight:600;">+ v1.3 장르 · 시장 좌표 2키</span>
+            <span style="color:#191970;font-weight:600;">+ v1.3 장르 · 시장 좌표 2키</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.3.1 Period Pack v2.5.0 정합 (13개 시대)</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1209,7 +1210,7 @@ def build_seed_json(state: Dict[str, Any]) -> str:
     creator_input = {
         "_idea_engine_meta": {
             "version": ENGINE_VERSION,
-            "patch": "v1.3 (장르+시장좌표 2키) on v1.2 (Stanton+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
+            "patch": "v1.3.1 (Period Pack v2.5.0 정합) on v1.3 (장르+시장좌표 2키) on v1.2 (Stanton+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
             "generated_at": datetime.now().isoformat(),
             "project_id": seed.get("project_id", ""),
             "verdict": state["stage_7_verdict"].get("final_verdict", ""),
