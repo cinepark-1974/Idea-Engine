@@ -39,9 +39,9 @@ import prompt as P
 # ─────────────────────────────────────
 # Engine Info
 # ─────────────────────────────────────
-ENGINE_VERSION = "v2.0"
-ENGINE_BUILD_DATE = "2026-05-17"
-ENGINE_PATCH_LEVEL = "v2.0 (HUNTER 골격) + v1.3.1 패치 (Period Pack v2.5.0 정합 — 13개 시대)"
+ENGINE_VERSION = "v2.1"
+ENGINE_BUILD_DATE = "2026-05-18"
+ENGINE_PATCH_LEVEL = "v2.1 (K-OTT Opening Pack) + v1.3 (장르+시장좌표 2키) + v1.2 (Stanton+Hook&Punch 4키) + v1.1 (Creator v2.5.2 정합 5키)"
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -307,7 +307,7 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합 5키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.2 Stanton 5원칙 · Hook&Punch 4키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.3 장르 · 시장 좌표 2키</span><br>
-            <span style="color:#191970;font-weight:600;">+ v1.3.1 Period Pack v2.5.0 정합 (13개 시대)</span>
+            <span style="color:#191970;font-weight:600;">+ v1.4 K-OTT Opening Pack 1키</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1207,10 +1207,13 @@ def build_seed_json(state: Dict[str, Any]) -> str:
     seed.setdefault("locked_genre_primary", {})
     seed.setdefault("locked_market_position", {})
 
+    # ─── v1.4: K-OTT Opening Pack 1개 신규 키 ───
+    seed.setdefault("locked_opening_type", {})
+
     creator_input = {
         "_idea_engine_meta": {
             "version": ENGINE_VERSION,
-            "patch": "v1.3.1 (Period Pack v2.5.0 정합) on v1.3 (장르+시장좌표 2키) on v1.2 (Stanton+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
+            "patch": "v1.4 (K-OTT Opening Pack 1키) on v1.3 (장르+시장좌표 2키) on v1.2 (Stanton+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
             "generated_at": datetime.now().isoformat(),
             "project_id": seed.get("project_id", ""),
             "verdict": state["stage_7_verdict"].get("final_verdict", ""),
@@ -2308,6 +2311,10 @@ def page_stage_7():
                     title=inp["title"], raw_idea=inp["raw_idea"],
                     logline_data=json.dumps(st.session_state["stage_2_logline"], ensure_ascii=False, indent=2),
                     hook_data=json.dumps(st.session_state["stage_3_hook"], ensure_ascii=False, indent=2),
+                    hook_punch_built_data=json.dumps(
+                        st.session_state.get("stage_3_hook_punch_built") or {},
+                        ensure_ascii=False, indent=2,
+                    ),
                     format_data=json.dumps(st.session_state["stage_4_format"], ensure_ascii=False, indent=2),
                     reference_data=json.dumps(st.session_state["stage_5_reference"], ensure_ascii=False, indent=2),
                     market_data=json.dumps(st.session_state["stage_6_market"], ensure_ascii=False, indent=2),
@@ -2694,6 +2701,40 @@ def page_stage_7():
                     st.markdown(f"**판매 대상**: {' / '.join(buyers)}")
                 if market_position.get("production_implications"):
                     st.markdown(f"**제작 영향**: {market_position['production_implications']}")
+
+        # ────────────────────────────────────────────────────
+        # v1.4 신규 1개 LOCKED 영역 (K-OTT Opening Pack)
+        # ────────────────────────────────────────────────────
+        # ⑫ locked_opening_type
+        opening_type = seed.get("locked_opening_type", {}) or {}
+        with st.expander(
+            f"⑫ K-OTT 오프닝 유형 (locked_opening_type · v1.4) · {'있음' if opening_type else '없음'}",
+            expanded=bool(opening_type),
+        ):
+            if not opening_type:
+                st.caption("v1.3 이전 시드입니다 (빈 객체). v1.4 신규 키 미적용.")
+            elif isinstance(opening_type, dict):
+                primary_o = opening_type.get("primary_opening_type", "")
+                secondary_o = opening_type.get("secondary_opening_type")
+                opening_color = {
+                    "상징 그래픽형": "#7B1FA2",
+                    "미니멀 타이포그래피형": "#191970",
+                    "시네마틱 몽타주형": "#C62828",
+                    "정지 타이틀 카드형": "#00897B",
+                    "에피소드별 변형형": "#F9A825",
+                }.get(primary_o, "#191970")
+                st.markdown(
+                    f'<div style="background:#FFFEF5;border-left:3px solid {opening_color};padding:10px;font-weight:600;font-size:1.05rem;color:{opening_color};">오프닝 유형: <b>{primary_o}</b></div>',
+                    unsafe_allow_html=True,
+                )
+                if secondary_o and secondary_o not in ("null", None, "없음"):
+                    st.caption(f"2순위 유형: **{secondary_o}**")
+                if opening_type.get("opening_concept"):
+                    st.markdown(f"**첫 30초 컨셉**: {opening_type['opening_concept']}")
+                if opening_type.get("korean_opening_reference"):
+                    st.caption(f"🇰🇷 {opening_type['korean_opening_reference']}")
+                if opening_type.get("opening_rationale"):
+                    st.markdown(f"**유형 선정 근거**: {opening_type['opening_rationale']}")
 
         st.markdown("---")
         section_header("⬇ STEP 8 · 다운로드", "EXPORT")
