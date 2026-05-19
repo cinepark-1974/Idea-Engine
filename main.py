@@ -42,7 +42,7 @@ import market_lens_pack as MLP
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
 ENGINE_BUILD_DATE = "2026-05-19"
-ENGINE_PATCH_LEVEL = "v2.0 (HUNTER 골격) + v1.4 패치 (Market Lens Pack — KR·JP·ID 3개 시장 좌표 / JP_DOC 모드)"
+ENGINE_PATCH_LEVEL = "v2.0 (HUNTER 골격) + v1.4.1 패치 (Market Lens — KR·JP·ID 3개 시장 좌표 + Stage 6 UI 동적 라벨)"
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -308,7 +308,7 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합 5키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.2 Stanton 5원칙 · Hook&Punch 4키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.3 장르 · 시장 좌표 2키</span><br>
-            <span style="color:#191970;font-weight:600;">+ v1.4 Market Lens (KR·JP·ID)</span>
+            <span style="color:#191970;font-weight:600;">+ v1.4.1 Market Lens (KR·JP·ID) + UI 동적</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1211,7 +1211,7 @@ def build_seed_json(state: Dict[str, Any]) -> str:
     creator_input = {
         "_idea_engine_meta": {
             "version": ENGINE_VERSION,
-            "patch": "v1.4 (Market Lens KR·JP·ID) on v1.3 (장르+시장좌표 2키) on v1.2 (Stanton+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
+            "patch": "v1.4.1 (Market Lens KR·JP·ID + UI 동적 라벨) on v1.3 (장르+시장좌표 2키) on v1.2 (Stanton+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
             "generated_at": datetime.now().isoformat(),
             "project_id": seed.get("project_id", ""),
             "verdict": state["stage_7_verdict"].get("final_verdict", ""),
@@ -2238,9 +2238,27 @@ def page_stage_6():
     else:
         mk = st.session_state["stage_6_market"]
         
+        # v1.4.1: Market Lens 기반 동적 라벨
+        # 우선순위 1: Sonnet 출력의 market_lens_applied
+        # 우선순위 2: target_market에서 직접 매핑 (fallback)
+        lens_applied = mk.get("market_lens_applied", {})
+        primary_market_code = lens_applied.get("primary_market", "")
+        if not primary_market_code:
+            primary_market_code = MLP.get_primary_market(inp.get("target_market", ""))
+        
+        # 1차 시장 코드 → 한글 라벨 + 국기 이모지
+        market_label_map = {
+            "KR": ("한국 시장", "🇰🇷"),
+            "JP": ("일본 시장", "🇯🇵"),
+            "ID": ("인도네시아 시장", "🇮🇩"),
+        }
+        primary_label, primary_flag = market_label_map.get(
+            primary_market_code, ("한국 시장", "🇰🇷")
+        )
+        
         c1, c2, c3 = st.columns(3)
         for col, key, label in [
-            (c1, "domestic_market", "한국 시장"),
+            (c1, "domestic_market", primary_label),
             (c2, "global_market", "글로벌 시장"),
             (c3, "ott_market", "OTT 시장"),
         ]:
@@ -2256,13 +2274,30 @@ def page_stage_6():
         st.markdown("---")
         
         dom = mk.get("domestic_market", {})
-        with st.expander("🇰🇷 한국 시장 (Domestic)", expanded=True):
+        # domestic_market.market_name이 있으면 우선 사용 (Sonnet이 채워준 값)
+        domestic_market_name = dom.get("market_name", primary_label.replace(" 시장", ""))
+        with st.expander(f"{primary_flag} {domestic_market_name} 시장 (Domestic)", expanded=True):
             ta = dom.get("target_audience", {})
             st.markdown(f"**타겟**: {ta.get('gender', '')} {ta.get('age_range', '')}")
             st.markdown(f"  └ {ta.get('psychographic', '')}")
             st.markdown(f"**예산**: {dom.get('budget_estimate', '')}")
             st.markdown(f"**유통**: {', '.join(dom.get('distribution', []))}")
             st.markdown(f"**IP 확장**: {', '.join(dom.get('ip_extension_potential', []))}")
+        
+        # v1.4.1: market_lens_applied 정보 표시 (있을 때)
+        if lens_applied:
+            with st.expander("🎯 Market Lens 적용 정보", expanded=False):
+                st.markdown(f"**1차 시장**: {market_label_map.get(lens_applied.get('primary_market', ''), ('-', ''))[0]}")
+                sec = lens_applied.get("secondary_market")
+                if sec:
+                    st.markdown(f"**2차 시장**: {market_label_map.get(sec, ('-', ''))[0]}")
+                if lens_applied.get("japan_doc_mode"):
+                    st.markdown(f"**JP_DOC 모드**: 활성화")
+                    track = lens_applied.get("japan_track", "")
+                    st.markdown(f"**일본 진입 트랙**: {track}")
+                    reasoning = lens_applied.get("japan_track_reasoning", "")
+                    if reasoning:
+                        st.markdown(f"  └ {reasoning}")
         
         glb = mk.get("global_market", {})
         with st.expander("🌏 글로벌 시장 (International)", expanded=True):
