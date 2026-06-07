@@ -42,7 +42,7 @@ import market_lens_pack as MLP
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
 ENGINE_BUILD_DATE = "2026-06-07"
-ENGINE_PATCH_LEVEL = "v1.5 (3-A+ 5원칙 보강 단계) + v1.4.1 패치 (Market Lens — KR·JP·ID 3개 시장 좌표 + Stage 6 UI 동적 라벨)"
+ENGINE_PATCH_LEVEL = "v1.6 (Story Core 5원칙 명칭) + v1.5 (3-A+ 5원칙 보강 단계) + v1.4.1 패치 (Market Lens — KR·JP·ID + Stage 6 UI 동적 라벨)"
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -310,10 +310,11 @@ with st.sidebar:
             Build: {ENGINE_BUILD_DATE}<br>
             HUNTER 발굴 + TRIAGE 진단<br>
             <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합 5키</span><br>
-            <span style="color:#191970;font-weight:600;">+ v1.2 Stanton 5원칙 · Hook&Punch 4키</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.2 Story Core 5원칙 · Hook&Punch 4키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.3 장르 · 시장 좌표 2키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.4.1 Market Lens (KR·JP·ID) + UI 동적</span><br>
-            <span style="color:#191970;font-weight:600;">+ v1.5 3-A+ 5원칙 보강 단계 (YELLOW·RED 자동 진입)</span>
+            <span style="color:#191970;font-weight:600;">+ v1.5 3-A+ 5원칙 보강 단계 (YELLOW·RED 자동 진입)</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.6 Story Core 5원칙 (명칭 정립)</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1203,7 +1204,7 @@ def build_seed_json(state: Dict[str, Any]) -> str:
     seed.setdefault("locked_ending_form", {})
     seed.setdefault("locked_creator_questions", [])
 
-    # ─── v1.2: Stanton 5원칙 + Hook & Punch 발굴 4개 신규 키 ───
+    # ─── v1.2: Story Core 5원칙 + Hook & Punch 발굴 4개 신규 키 ───
     seed.setdefault("locked_empathy_anchor", {})
     seed.setdefault("locked_hook_signature", {})
     seed.setdefault("locked_punch_scene", {})
@@ -1216,7 +1217,7 @@ def build_seed_json(state: Dict[str, Any]) -> str:
     creator_input = {
         "_idea_engine_meta": {
             "version": ENGINE_VERSION,
-            "patch": "v1.4.1 (Market Lens KR·JP·ID + UI 동적 라벨) on v1.3 (장르+시장좌표 2키) on v1.2 (Stanton+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
+            "patch": "v1.4.1 (Market Lens KR·JP·ID + UI 동적 라벨) on v1.3 (장르+시장좌표 2키) on v1.2 (StoryCore+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
             "generated_at": datetime.now().isoformat(),
             "project_id": seed.get("project_id", ""),
             "verdict": state["stage_7_verdict"].get("final_verdict", ""),
@@ -1465,10 +1466,10 @@ def _foundation_is_green(foundation) -> bool:
 
 
 def page_stage_3():
-    """Stage 3 격상판 (v1.2) — Stanton 5원칙 → Hook & Punch 발굴 → 5축 채점"""
+    """Stage 3 격상판 (v1.2) — Story Core 5원칙 → Hook & Punch 발굴 → 5축 채점"""
     section_header("🎯 STEP 3 · 후크 진단", "FOUNDATION → HOOK & PUNCH → SCORING")
     small_meta(
-        "Andrew Stanton 5원칙으로 본질 진단 → Hook & Punch 발굴 → 5축 채점의 3단 구조. "
+        "Story Core 5원칙으로 본질 진단 → Hook & Punch 발굴 → 5축 채점의 3단 구조. "
         "한국 + 할리우드 좌표가 자동 매핑됩니다."
     )
 
@@ -1499,7 +1500,7 @@ def page_stage_3():
     with cstep_a:
         st.markdown(
             f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if foundation_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;">
-            {'✓' if foundation_done else '①'} 3-A · Stanton 5원칙
+            {'✓' if foundation_done else '①'} 3-A · Story Core 5원칙
             </div>""", unsafe_allow_html=True)
     with cstep_b:
         st.markdown(
@@ -1515,23 +1516,23 @@ def page_stage_3():
     st.markdown("---")
 
     # ════════════════════════════════════════════════════════
-    # 3-A: Stanton 5원칙 진단
+    # 3-A: Story Core 5원칙 진단
     # ════════════════════════════════════════════════════════
     if not foundation_done:
-        st.markdown("### 🎬 3-A · Stanton 5원칙 진단")
+        st.markdown("### 🎬 3-A · Story Core 5원칙 진단")
         st.markdown(
             '<div class="callout">'
-            'Andrew Stanton (Pixar)의 스토리텔링 5원칙으로 본질을 진단합니다. '
+            'BLUE JEANS의 Story Core 5원칙으로 본질을 진단합니다 (Pixar Andrew Stanton의 스토리텔링 5원칙 기반). '
             'Empathy Anchor · Desire Engine · Stakes Calibration · Emotional Impact · Satisfactory Ending — '
             '각 원칙마다 한국·할리우드 좌표 작품이 자동 매핑됩니다.'
             '</div>', unsafe_allow_html=True)
 
-        if st.button("🎬 Stanton 5원칙 진단 실행", type="primary", use_container_width=True):
+        if st.button("🎬 Story Core 5원칙 진단 실행", type="primary", use_container_width=True):
             client = get_anthropic_client()
             if not client:
                 st.warning("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
                 return
-            with st.spinner("Sonnet이 Stanton 5원칙 + 한국·할리우드 좌표 매핑 중... (30~60초)"):
+            with st.spinner("Sonnet이 Story Core 5원칙 + 한국·할리우드 좌표 매핑 중... (30~60초)"):
                 prompt_text = P.STAGE_3A_STORY_FOUNDATION_PROMPT.format(
                     title=inp["title"], logline=logline,
                     genre=inp["genre"], target_market=inp["target_market"],
@@ -1855,7 +1856,7 @@ def page_stage_3():
     with st.expander("🔄 이전 단계 다시 하기", expanded=False):
         cr_a, cr_ap, cr_b = st.columns(3)
         with cr_a:
-            if st.button("3-A Stanton 5원칙 재실행", key="rerun_3a"):
+            if st.button("3-A Story Core 5원칙 재실행", key="rerun_3a"):
                 for k in ["stage_3_foundation",
                           "stage_3_reinforce_questions", "stage_3_reinforce_answers", "stage_3_reinforce_built",
                           "stage_3_hook_punch_questions",
@@ -1894,8 +1895,8 @@ def _stage3_back_buttons():
 
 
 def _render_foundation_result(foundation):
-    """3-A Stanton 5원칙 결과 렌더링."""
-    st.markdown("### 🎬 3-A · Stanton 5원칙 진단 결과")
+    """3-A Story Core 5원칙 결과 렌더링."""
+    st.markdown("### 🎬 3-A · Story Core 5원칙 진단 결과")
 
     total = foundation.get("foundation_total_score", 0)
     verdict = foundation.get("foundation_verdict", "")
@@ -2775,7 +2776,7 @@ def page_stage_7():
                         st.markdown(f"- {q}")
 
         # ────────────────────────────────────────────────────
-        # v1.2 신규 4개 LOCKED 영역 (Stanton 5원칙 + Hook&Punch)
+        # v1.2 신규 4개 LOCKED 영역 (Story Core 5원칙 + Hook&Punch)
         # ────────────────────────────────────────────────────
         # ⑥ locked_empathy_anchor
         empathy = seed.get("locked_empathy_anchor", {}) or {}
