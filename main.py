@@ -41,8 +41,8 @@ import market_lens_pack as MLP
 # Engine Info
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
-ENGINE_BUILD_DATE = "2026-05-19"
-ENGINE_PATCH_LEVEL = "v2.0 (HUNTER 골격) + v1.4.1 패치 (Market Lens — KR·JP·ID 3개 시장 좌표 + Stage 6 UI 동적 라벨)"
+ENGINE_BUILD_DATE = "2026-06-07"
+ENGINE_PATCH_LEVEL = "v1.5 (3-A+ 5원칙 보강 단계) + v1.4.1 패치 (Market Lens — KR·JP·ID 3개 시장 좌표 + Stage 6 UI 동적 라벨)"
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -112,6 +112,10 @@ def reset_triage_only():
         "stage_3_hook", "stage_4_format", "stage_5_reference",
         "stage_6_market", "stage_7_verdict", "selected_logline",
         "seed_loaded_from_hunter",
+        # Stage 3 하위 단계 키 (3-A / 3-A+ 보강 / 3-B)
+        "stage_3_foundation",
+        "stage_3_reinforce_questions", "stage_3_reinforce_answers", "stage_3_reinforce_built",
+        "stage_3_hook_punch_questions", "stage_3_hook_punch_answers", "stage_3_hook_punch_built",
     ]
     for k in keys:
         if k in st.session_state:
@@ -308,7 +312,8 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합 5키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.2 Stanton 5원칙 · Hook&Punch 4키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.3 장르 · 시장 좌표 2키</span><br>
-            <span style="color:#191970;font-weight:600;">+ v1.4.1 Market Lens (KR·JP·ID) + UI 동적</span>
+            <span style="color:#191970;font-weight:600;">+ v1.4.1 Market Lens (KR·JP·ID) + UI 동적</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.5 3-A+ 5원칙 보강 단계 (YELLOW·RED 자동 진입)</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1435,6 +1440,30 @@ def page_stage_2():
         render_progress_save_button(stage_num=2)
 
 
+def _foundation_is_green(foundation) -> bool:
+    """3-A 진단이 GREEN인지 판정 (v1.5).
+
+    GREEN이면 보강 단계를 건너뛰고 3-B로 직행, 아니면(YELLOW·RED) 보강.
+    판정 우선순위: foundation_verdict 문자열 → 없으면 total_score 40 기준.
+    """
+    if not foundation:
+        return True  # 진단 없으면 게이트하지 않음 (방어적)
+    verdict = str(foundation.get("foundation_verdict", "")).upper()
+    if "GREEN" in verdict:
+        return True
+    if "YELLOW" in verdict or "RED" in verdict:
+        return False
+    # verdict 문자열이 불명확하면 총점으로 판정 (40점 기준)
+    raw = foundation.get("foundation_total_score", "")
+    try:
+        m = re.search(r"\d+", str(raw))
+        if m:
+            return int(m.group()) >= 40
+    except (ValueError, TypeError):
+        pass
+    return True  # 점수도 못 읽으면 게이트하지 않음 (기존 흐름 보존)
+
+
 def page_stage_3():
     """Stage 3 격상판 (v1.2) — Stanton 5원칙 → Hook & Punch 발굴 → 5축 채점"""
     section_header("🎯 STEP 3 · 후크 진단", "FOUNDATION → HOOK & PUNCH → SCORING")
@@ -1446,12 +1475,27 @@ def page_stage_3():
     inp = st.session_state["stage_1_input"]
     logline = st.session_state.get("selected_logline", "")
 
-    # 진행 상태 표시 (3단 stepper)
+    # 진행 상태 표시 (동적 stepper — 보강 필요 시 3-A+ 칸 추가)
     foundation_done = bool(st.session_state.get("stage_3_foundation"))
     hp_built_done = bool(st.session_state.get("stage_3_hook_punch_built"))
     scoring_done = bool(st.session_state.get("stage_3_hook"))
+    reinforce_built_done = bool(st.session_state.get("stage_3_reinforce_built"))
 
-    cstep_a, cstep_b, cstep_c = st.columns(3)
+    # 3-A 진단이 끝났고 GREEN이 아니면 보강 단계가 필요하다 (v1.5)
+    needs_reinforce = False
+    if foundation_done:
+        needs_reinforce = not _foundation_is_green(st.session_state["stage_3_foundation"])
+
+    if needs_reinforce:
+        cstep_a, cstep_ap, cstep_b, cstep_c = st.columns(4)
+        with cstep_ap:
+            st.markdown(
+                f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if reinforce_built_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;font-size:.9rem;">
+                {'✓' if reinforce_built_done else '◆'} 3-A+ · 보강
+                </div>""", unsafe_allow_html=True)
+    else:
+        cstep_a, cstep_b, cstep_c = st.columns(3)
+
     with cstep_a:
         st.markdown(
             f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if foundation_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;">
@@ -1515,6 +1559,105 @@ def page_stage_3():
     # 3-A 결과 표시
     foundation = st.session_state["stage_3_foundation"]
     _render_foundation_result(foundation)
+
+    # ════════════════════════════════════════════════════════
+    # 3-A+ : 5원칙 보강 발굴 (v1.5 — GREEN이 아닐 때만)
+    # ════════════════════════════════════════════════════════
+    if not _foundation_is_green(foundation):
+        reinforce_built = st.session_state.get("stage_3_reinforce_built")
+
+        # 보강이 아직 완료되지 않았으면 보강 단계를 진행하고 게이트한다
+        if not reinforce_built:
+            st.markdown("---")
+            st.markdown("### ◆ 3-A+ · 5원칙 보강 발굴")
+            verdict = foundation.get("foundation_verdict", "")
+            weakest = foundation.get("weakest_principle", "")
+            st.markdown(
+                '<div class="callout">'
+                f'본질 진단이 <b>{verdict}</b>로, GREEN(40점) 기준에 미치지 못했습니다. '
+                f'가장 약한 지점(<b>{weakest}</b>)을 집중 보강한 뒤 Hook & Punch 발굴로 넘어갑니다. '
+                'Hook은 단단한 본질 위에서만 작동합니다.'
+                '</div>', unsafe_allow_html=True)
+
+            # 보강 질문지 생성 (한 번만)
+            rf_questions = st.session_state.get("stage_3_reinforce_questions")
+            if not rf_questions:
+                if st.button("◆ 보강 발굴 질문 생성 (Sonnet)", type="primary", use_container_width=True):
+                    client = get_anthropic_client()
+                    if not client:
+                        st.warning("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+                        return
+                    with st.spinner("Sonnet이 약한 원칙을 집어 보강 질문을 생성 중... (20~40초)"):
+                        prompt_text = P.STAGE_3A_PLUS_REINFORCE_PROMPT.format(
+                            title=inp["title"], genre=inp["genre"], logline=logline,
+                            raw_idea=inp["raw_idea"],
+                            foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                        )
+                        result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                        if result.get("_parse_error"):
+                            st.error("응답 파싱 실패")
+                            with st.expander("Raw 응답"):
+                                st.text(result.get("_raw", ""))
+                            return
+                        st.session_state["stage_3_reinforce_questions"] = result
+                        st.rerun()
+                _stage3_back_buttons()
+                return
+
+            # 보강 질문 표시 + 답변 수집
+            if rf_questions.get("echo_back"):
+                st.markdown(f"*{rf_questions['echo_back']}*")
+            if rf_questions.get("reinforce_intro"):
+                st.caption(rf_questions["reinforce_intro"])
+
+            rf_answers = {}
+            for q in rf_questions.get("reinforce_questions", []):
+                qid = q.get("q_id", "")
+                st.markdown(f"**{qid} · {q.get('target_principle', '')}** — {q.get('question', '')}")
+                hints = q.get("hint_options", [])
+                if hints:
+                    st.caption("참고: " + " / ".join(hints))
+                rf_answers[qid] = st.text_area(
+                    f"답변 {qid}", key=f"s3ap_{qid}", height=70,
+                    label_visibility="collapsed",
+                )
+
+            if st.button("◆ 보강된 본질 진단 빌드 (Sonnet)", type="primary", use_container_width=True):
+                if not all(v.strip() for v in rf_answers.values()):
+                    st.warning("모든 질문에 답해주세요.")
+                else:
+                    client = get_anthropic_client()
+                    st.session_state["stage_3_reinforce_answers"] = rf_answers
+                    with st.spinner("Sonnet이 보강된 5원칙 진단을 다시 빌드 중... (30~50초)"):
+                        prompt_text = P.STAGE_3A_PLUS_BUILD_PROMPT.format(
+                            title=inp["title"], genre=inp["genre"], logline=logline,
+                            raw_idea=inp["raw_idea"],
+                            foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                            reinforce_answers=json.dumps(rf_answers, ensure_ascii=False, indent=2),
+                        )
+                        result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                        if result.get("_parse_error"):
+                            st.error("응답 파싱 실패")
+                            with st.expander("Raw 응답"):
+                                st.text(result.get("_raw", ""))
+                            return
+                        st.session_state["stage_3_reinforce_built"] = result
+                        st.rerun()
+
+            _stage3_back_buttons()
+            return
+
+        # 보강 완료 — 보강본 결과 표시 후 foundation을 보강본으로 교체
+        st.markdown("---")
+        st.markdown("### ◆ 3-A+ · 보강 결과")
+        if reinforce_built.get("reinforcement_summary"):
+            new_score = reinforce_built.get("foundation_total_score", "?")
+            new_verdict = reinforce_built.get("foundation_verdict", "")
+            st.success(f"보강 후: {new_score}/50 · {new_verdict}")
+            st.markdown(reinforce_built["reinforcement_summary"])
+        _render_foundation_result(reinforce_built)
+        # 하류 단계(3-B)는 보강본을 받는다
+        foundation = reinforce_built
 
     # ════════════════════════════════════════════════════════
     # 3-B: Hook & Punch 발굴 (질문지 생성 + 답변 + 빌드)
@@ -1708,13 +1851,23 @@ def page_stage_3():
                 st.session_state["current_stage"] = 4
                 st.rerun()
 
-    # 3-A·3-B 재실행 옵션
+    # 3-A·3-A+·3-B 재실행 옵션
     with st.expander("🔄 이전 단계 다시 하기", expanded=False):
-        cr_a, cr_b = st.columns(2)
+        cr_a, cr_ap, cr_b = st.columns(3)
         with cr_a:
             if st.button("3-A Stanton 5원칙 재실행", key="rerun_3a"):
-                for k in ["stage_3_foundation", "stage_3_hook_punch_questions",
+                for k in ["stage_3_foundation",
+                          "stage_3_reinforce_questions", "stage_3_reinforce_answers", "stage_3_reinforce_built",
+                          "stage_3_hook_punch_questions",
                           "stage_3_hook_punch_answers", "stage_3_hook_punch_built", "stage_3_hook"]:
+                    st.session_state[k] = None
+                st.rerun()
+        with cr_ap:
+            if st.button("3-A+ 보강 재실행", key="rerun_3ap"):
+                for k in ["stage_3_reinforce_questions", "stage_3_reinforce_answers",
+                          "stage_3_reinforce_built",
+                          "stage_3_hook_punch_questions", "stage_3_hook_punch_answers",
+                          "stage_3_hook_punch_built", "stage_3_hook"]:
                     st.session_state[k] = None
                 st.rerun()
         with cr_b:
