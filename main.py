@@ -42,7 +42,7 @@ import market_lens_pack as MLP
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
 ENGINE_BUILD_DATE = "2026-06-07"
-ENGINE_PATCH_LEVEL = "v1.6 (Story Core 5원칙 명칭) + v1.5 (3-A+ 5원칙 보강 단계) + v1.4.1 패치 (Market Lens — KR·JP·ID + Stage 6 UI 동적 라벨)"
+ENGINE_PATCH_LEVEL = "v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -255,7 +255,7 @@ def render_progress_save_button(stage_num: int):
     if isinstance(s1, dict):
         title = s1.get("title", "untitled").replace(" ", "_").replace("/", "_")[:40]
     json_str = build_progress_json(state)
-    filename = f"IdeaProgress_{title}_stage{last}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    filename = f"IdeaProgress_{title}_진행백업_세션복구용_stage{last}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     st.download_button(
         label=f"💾 진행 상태 백업 (Stage {last}까지) — JSON 다운로드",
         data=json_str.encode("utf-8"),
@@ -314,7 +314,8 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v1.3 장르 · 시장 좌표 2키</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.4.1 Market Lens (KR·JP·ID) + UI 동적</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.5 3-A+ 5원칙 보강 단계 (YELLOW·RED 자동 진입)</span><br>
-            <span style="color:#191970;font-weight:600;">+ v1.6 Story Core 5원칙 (명칭 정립)</span>
+            <span style="color:#191970;font-weight:600;">+ v1.6 Story Core 5원칙 (명칭 정립)</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.6.1 시드/백업 파일명·라벨 구분</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -378,15 +379,15 @@ with st.sidebar:
         if isinstance(_s1, dict):
             _title_for_sidebar = _s1.get("title", "untitled").replace(" ", "_").replace("/", "_")[:30]
         _sb_json = build_progress_json(_state_for_sidebar)
-        _sb_filename = f"IdeaProgress_{_title_for_sidebar}_stage{last_stage_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        _sb_filename = f"IdeaProgress_{_title_for_sidebar}_진행백업_세션복구용_stage{last_stage_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         st.download_button(
-            label="💾 백업 JSON 다운로드",
+            label="💾 진행 백업 (세션 복구용)",
             data=_sb_json.encode("utf-8"),
             file_name=_sb_filename,
             mime="application/json",
             key="sidebar_progress_save",
             use_container_width=True,
-            help="현재까지 진행한 모든 Stage 데이터를 JSON으로 저장",
+            help="세션 휘발 시 복원용 백업입니다. Creator Engine 인계 시드가 아닙니다 — 최종 시드는 Stage 7 'LOCKED 시드 JSON 다운로드'에서 받으세요.",
         )
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
@@ -1217,7 +1218,7 @@ def build_seed_json(state: Dict[str, Any]) -> str:
     creator_input = {
         "_idea_engine_meta": {
             "version": ENGINE_VERSION,
-            "patch": "v1.4.1 (Market Lens KR·JP·ID + UI 동적 라벨) on v1.3 (장르+시장좌표 2키) on v1.2 (StoryCore+Hook&Punch 4키) on v1.1 (Creator v2.5.2 정합 5키)",
+            "patch": "v1.6 (Story Core 5원칙) on v1.5 (3-A+ 보강) on v1.4.1 (Market Lens) on v1.3 (장르+시장좌표) on v1.2 (StoryCore+Hook&Punch) on v1.1 (Creator 정합)",
             "generated_at": datetime.now().isoformat(),
             "project_id": seed.get("project_id", ""),
             "verdict": state["stage_7_verdict"].get("final_verdict", ""),
@@ -2926,11 +2927,12 @@ def page_stage_7():
         with d2:
             json_str = build_seed_json(dict(st.session_state))
             st.download_button(
-                label="🔑 LOCKED 시드 JSON 다운로드",
+                label="🔑 LOCKED 시드 JSON 다운로드 ★ Creator Engine 인계용",
                 data=json_str.encode("utf-8"),
-                file_name=f"IdeaSeed_{seed.get('project_id', 'unknown')}_{datetime.now().strftime('%Y%m%d')}.json",
+                file_name=f"IdeaSeed_{seed.get('project_id', 'unknown')}_크리에이터엔진용_{datetime.now().strftime('%Y%m%d')}.json",
                 mime="application/json",
                 use_container_width=True,
+                help="이 파일이 Creator Engine 인계용 최종 시드입니다. Creator Engine ① 화면의 'Idea Engine JSON 업로드'에 올리세요.",
             )
         
         st.info("📌 **Creator Engine 사용법** — Creator Engine ① 화면 상단의 'Idea Engine JSON 업로드' 버튼을 눌러 위 JSON 파일을 업로드하면 ① 입력 필드가 자동으로 채워집니다.")
