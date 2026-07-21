@@ -42,7 +42,7 @@ import market_lens_pack as MLP
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
 ENGINE_BUILD_DATE = "2026-06-07"
-ENGINE_PATCH_LEVEL = "v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
+ENGINE_PATCH_LEVEL = "v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -116,6 +116,8 @@ def reset_triage_only():
         "stage_3_foundation",
         "stage_3_reinforce_questions", "stage_3_reinforce_answers", "stage_3_reinforce_built",
         "stage_3_hook_punch_questions", "stage_3_hook_punch_answers", "stage_3_hook_punch_built",
+        # 3-C+ Hook 약점 보완 (v2.1)
+        "stage_3_cplus_suggestions", "stage_3_cplus_rescore_count",
     ]
     for k in keys:
         if k in st.session_state:
@@ -315,7 +317,8 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v1.4.1 Market Lens (KR·JP·ID) + UI 동적</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.5 3-A+ 5원칙 보강 단계 (YELLOW·RED 자동 진입)</span><br>
             <span style="color:#191970;font-weight:600;">+ v1.6 Story Core 5원칙 (명칭 정립)</span><br>
-            <span style="color:#191970;font-weight:600;">+ v1.6.1 시드/백업 파일명·라벨 구분</span>
+            <span style="color:#191970;font-weight:600;">+ v1.6.1 시드/백업 파일명·라벨 구분</span><br>
+            <span style="color:#191970;font-weight:600;">+ v2.1 3-C+ Hook 약점 보완 (객관식 · 선택 게이트)</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1828,10 +1831,30 @@ def page_stage_3():
     hk = st.session_state["stage_3_hook"]
     st.markdown("---")
     st.markdown("### 📊 3-C · 5축 채점 결과")
+    if hk.get("_rescored"):
+        rc = st.session_state.get("stage_3_cplus_rescore_count", 0)
+        st.success(f"🔧 3-C+ 보강 반영본 (보완 {rc}회) — {hk.get('reinforcement_summary', '')}")
     _render_scoring_result(hk)
 
-    # 다음 단계 / 이전 / 재실행
+    # ── 3-C+ Hook 약점 보완 (v2.1) — CONDITIONAL/FAIL일 때 선택 진입 ──
     status = hk.get("gate_status", "")
+    weak_axes_now = [k for k, v in hk.get("scores", {}).items()
+                     if isinstance(v, dict) and v.get("score", 10) < 7]
+    can_reinforce = (status in ("CONDITIONAL", "FAIL")) and len(weak_axes_now) > 0
+    rescore_count = st.session_state.get("stage_3_cplus_rescore_count", 0)
+
+    if can_reinforce:
+        st.markdown("---")
+        st.markdown("### 🔧 3-C+ · Hook 약점 보완 (선택)")
+        st.markdown(
+            '<div class="callout">'
+            'CONDITIONAL 상태입니다. 장르·기획에 확신이 있으면 그대로 <b>Format으로 진행</b>하셔도 됩니다. '
+            '확신이 서지 않으면 아래에서 약점 보완을 진행합니다 — 엔진이 완성형 보강안을 제시하고, '
+            '<b>선택하신 안만 반영해</b> 5축을 다시 채점합니다. 최종 시드 구조는 바뀌지 않습니다.'
+            '</div>', unsafe_allow_html=True)
+        _render_cplus_reinforce(hk, inp, logline)
+
+    # ── 다음 단계 / 이전 / 재실행 ──
     st.markdown("---")
     cb, cr, cn = st.columns([1, 1, 2])
     with cb:
@@ -1841,6 +1864,7 @@ def page_stage_3():
     with cr:
         if st.button("재실행 (3-C만)"):
             st.session_state["stage_3_hook"] = None
+            st.session_state["stage_3_cplus_suggestions"] = None
             st.rerun()
     with cn:
         if status == "FAIL":
@@ -1882,6 +1906,128 @@ def page_stage_3():
     # ── 진행 상태 백업 ──
     st.markdown("---")
     render_progress_save_button(stage_num=3)
+
+
+def _render_cplus_reinforce(hk, inp, logline):
+    """3-C+ Hook 약점 보완 (v2.1).
+
+    3-C 채점 결과(hk)에서 약한 축의 완성형 보강안을 엔진이 생성 → 작가는 객관식 선택 →
+    선택안만 반영해 5축 재채점 → stage_3_hook 딕셔너리를 동일 스키마로 교체.
+    하류(Format·시드)는 무변경으로 받는다. 재채점은 최대 2회.
+    """
+    MAX_RESCORE = 2
+    rescore_count = st.session_state.get("stage_3_cplus_rescore_count", 0)
+
+    if rescore_count >= MAX_RESCORE:
+        st.info(
+            f"약점 보완을 {MAX_RESCORE}회 진행했습니다. "
+            "추가 개선이 필요하면 본질(3-A Story Core 5원칙) 재검토를 권장합니다. "
+            "현재 점수로 Format 진행도 가능합니다."
+        )
+        return
+
+    suggestions = st.session_state.get("stage_3_cplus_suggestions")
+
+    # ── 1단계: 보강안 생성 ──
+    if not suggestions:
+        if st.button("💡 보강안 생성 (Sonnet)", key="cplus_gen", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 약점 축별 보강안을 작성 중... (20~30초)"):
+                prompt_text = P.STAGE_3C_PLUS_SUGGEST_PROMPT.format(
+                    title=inp["title"], genre=inp["genre"], logline=logline,
+                    raw_idea=inp["raw_idea"],
+                    hook_result=json.dumps(hk, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("보강안 생성 응답 파싱 실패")
+                    return
+                st.session_state["stage_3_cplus_suggestions"] = result
+                st.rerun()
+        return
+
+    # ── 2단계: 보강안 객관식 선택 ──
+    if suggestions.get("echo_back"):
+        st.markdown(f"**진단 요약** — {suggestions['echo_back']}")
+    if suggestions.get("suggest_intro"):
+        st.caption(suggestions["suggest_intro"])
+
+    axis_suggestions = suggestions.get("axis_suggestions", [])
+    if not axis_suggestions:
+        st.warning("생성된 보강안이 없습니다. 재실행하거나 현재 점수로 진행하십시오.")
+        return
+
+    adopted = []  # 채택된 옵션 모음 (RESCORE 입력)
+    for ax in axis_suggestions:
+        axis_label = ax.get("axis_label_kr", ax.get("axis_key", ""))
+        cur = ax.get("current_score", "")
+        st.markdown(f"#### {axis_label} · 현재 {cur}/10")
+        if ax.get("current_comment"):
+            st.caption(ax["current_comment"])
+
+        opts = ax.get("options", [])
+        # 라디오 라벨: 제목 + 효과. '선택 안 함'을 맨 앞에 둬서 강제하지 않음.
+        radio_labels = ["(이 축은 보완 안 함)"]
+        opt_map = {}
+        for o in opts:
+            lbl = f"{o.get('label', '(무제)')} — {o.get('effect', '')}"
+            radio_labels.append(lbl)
+            opt_map[lbl] = o
+
+        chosen = st.radio(
+            f"{axis_label} 보강안 선택",
+            radio_labels,
+            key=f"cplus_radio_{ax.get('axis_key', axis_label)}",
+            label_visibility="collapsed",
+        )
+        # 선택된 안의 본문을 펼쳐 보여줌
+        if chosen in opt_map:
+            picked = opt_map[chosen]
+            st.markdown(
+                f'<div style="background:#F0F2FF;border-left:3px solid #191970;'
+                f'padding:8px 12px;border-radius:6px;font-size:.9rem;">'
+                f'{picked.get("content", "")}</div>',
+                unsafe_allow_html=True,
+            )
+            adopted.append({
+                "axis_key": ax.get("axis_key", ""),
+                "axis_label": axis_label,
+                "label": picked.get("label", ""),
+                "content": picked.get("content", ""),
+            })
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+    # ── 3단계: 재채점 실행 ──
+    st.markdown("---")
+    ca, cbn = st.columns([1, 1])
+    with ca:
+        if st.button("↺ 보강안 다시 생성", key="cplus_regen"):
+            st.session_state["stage_3_cplus_suggestions"] = None
+            st.rerun()
+    with cbn:
+        disabled = (len(adopted) == 0)
+        if st.button("✅ 선택안 반영해 재채점", key="cplus_rescore",
+                     type="primary", use_container_width=True, disabled=disabled):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 보강 반영 5축 재채점 중... (20~30초)"):
+                prompt_text = P.STAGE_3C_PLUS_RESCORE_PROMPT.format(
+                    title=inp["title"], logline=logline,
+                    genre=inp["genre"], format=inp["format"],
+                    raw_idea=inp["raw_idea"],
+                    hook_result=json.dumps(hk, ensure_ascii=False, indent=2),
+                    adopted_options=json.dumps(adopted, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("재채점 응답 파싱 실패")
+                    return
+                # stage_3_hook을 동일 스키마 결과로 교체 → 하류 무변경
+                st.session_state["stage_3_hook"] = result
+                st.session_state["stage_3_cplus_suggestions"] = None
+                st.session_state["stage_3_cplus_rescore_count"] = rescore_count + 1
+                st.rerun()
+    if disabled:
+        st.caption("보강안을 최소 1개 이상 선택하면 재채점이 활성화됩니다.")
 
 
 def _stage3_back_buttons():
