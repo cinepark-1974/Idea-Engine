@@ -1,99 +1,416 @@
 """
-👖 BLUE JEANS Creator Engine — Main Application
+Idea Engine v2.0
+BLUE JEANS PICTURES · Creative Discovery & Triage Engine
 
-버전 정보는 prompt.py의 ENGINE_VERSION / ENGINE_BUILD_DATE를 참조한다.
-(단일 소스 원칙 — 버전은 한 곳에서만 관리)
+v1.0: TRIAGE 트랙 (7-Stage 진단·판정 → LOCKED 시드)
+v1.1: Creator Engine v2.5.2 정합 — 5개 신규 LOCKED 키 출력
+      (locked_core_decisions / locked_music_rules / locked_visual_motifs
+       / locked_ending_form / locked_creator_questions)
+v2.0: HUNTER 트랙 추가 (5개 입구 아이디어 발굴 엔진)
 
-아이디어 → 기획개발 패키지
-단일 페이지 · 사이드바 최소 · 2단계 Brainstorm
+[모드 분기]
+HOME → [HUNTER 발굴 | TRIAGE 진단] 선택
+HUNTER 출력 시드 → TRIAGE Stage 1 자동 전달
+
+[설계 철학]
+"카탈로그를 보여주는 게 아니라 작가 안에 잠재된 답을 끌어내기"
+
+Writer Engine v3.1 디자인 시스템 적용
 """
 
-import streamlit as st
 import json
 import re
+import io
+import os
 from datetime import datetime
+from typing import Dict, Any, Optional
+
+import streamlit as st
+import plotly.graph_objects as go
+from anthropic import Anthropic
+from docx import Document
+from docx.shared import Pt, RGBColor, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+
 import prompt as P
+import market_lens_pack as MLP
 
-# ─── 버전 정보 (prompt.py에서 단일 소스로 참조) ───
-ENGINE_VERSION = P.ENGINE_VERSION
-ENGINE_BUILD_DATE = P.ENGINE_BUILD_DATE
-ENGINE_FOOTER = f"© 2026 BLUE JEANS PICTURES · Creator Engine {ENGINE_VERSION}"
+# ─────────────────────────────────────
+# Engine Info
+# ─────────────────────────────────────
+ENGINE_VERSION = "v2.0"
+ENGINE_BUILD_DATE = "2026-06-07"
+ENGINE_PATCH_LEVEL = "v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
 
-ANTHROPIC_MODEL = "claude-sonnet-4-6"           # 구조 작업 — 비용 효율
-ANTHROPIC_MODEL_OPUS = "claude-opus-4-6"        # 캐릭터 바이블 · 트리트먼트 · 톤 문서 — 최고 품질
+ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
+ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
+MAX_TOKENS = 16000
 
-
-# ─── v2.4.0: 시대극 자동 감지 컨텍스트 추출 ─────────────────────────
-def _get_period_scan_context(project: dict = None) -> tuple:
-    """현재 세션 상태와 프로젝트 데이터에서 시대 감지용 텍스트를 추출.
-    
-    Idea Engine v1.0 시드(st.session_state["locked_seed"])가 있으면 활용.
-    - locked_logline, locked_references, locked_genre, locked_theme 등이
-      시대(SAGEUK/COLONIAL/MODERN_HIST) 자동 감지의 결정적 시그널이 됨.
-    
-    Returns:
-        (locked_text, idea_text) 튜플.
-        둘 다 빈 문자열이면 시대 OVERRIDE·Period Pack 자동 감지가 작동하지 않으며
-        v2.3.10과 동일하게 동작 (하위 호환).
-    """
-    try:
-        locked_seed = st.session_state.get("locked_seed", {}) or {}
-    except Exception:
-        locked_seed = {}
-    return P.build_scan_text_for_period_detection(
-        project=project or {},
-        locked_seed=locked_seed,
-    )
-
-# ─── Page Config ───
+# ─────────────────────────────────────
+# Page Config
+# ─────────────────────────────────────
 st.set_page_config(
-    page_title="BLUE JEANS · Creator Engine",
-    page_icon="👖",
+    page_title="BLUE JEANS · Idea Engine",
+    page_icon="💡",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 
-# ─── Sidebar: Engine Info (버전 확인용) ───
+# ═══════════════════════════════════════════════════════════
+# Session State + Mode-Switch Helpers
+# (사이드바보다 먼저 정의되어야 함 — 사이드바 버튼이 호출함)
+# ═══════════════════════════════════════════════════════════
+def init_session_state():
+    defaults = {
+        # ── v2.0 모드 분기 ──
+        "mode": "HOME",                # HOME | HUNTER | TRIAGE
+        # ── HUNTER 트랙 (v2.0 신규) ──
+        "hunter_entry": None,          # None | "0" | "1" | "2" | "3" | "4" | "5"
+        "hunter_input": "",            # 입구 0 자유 텍스트 또는 입구별 입력
+        "hunter_classified": None,     # 입구 0 자동분류 결과 (Sonnet)
+        "hunter_stage_data": {},       # 입구별 진행 데이터 (질문 응답, 시드 후보 등)
+        "hunter_output": None,         # 최종 LOCKED 시드 JSON (TRIAGE 입력으로 전달)
+        # ── TRIAGE 트랙 (v1.0 호환) ──
+        "current_stage": 1,
+        "stage_1_input": None,
+        "stage_2_logline": None,
+        "stage_3_hook": None,
+        "stage_4_format": None,
+        "stage_5_reference": None,
+        "stage_6_market": None,
+        "stage_7_verdict": None,
+        "selected_logline": None,
+        "seed_loaded_from_hunter": False,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def reset_session():
+    keys_to_clear = [
+        "mode",
+        "hunter_entry", "hunter_input", "hunter_classified",
+        "hunter_stage_data", "hunter_output",
+        "current_stage", "stage_1_input", "stage_2_logline",
+        "stage_3_hook", "stage_4_format", "stage_5_reference",
+        "stage_6_market", "stage_7_verdict", "selected_logline",
+        "seed_loaded_from_hunter",
+    ]
+    for k in keys_to_clear:
+        if k in st.session_state:
+            del st.session_state[k]
+    init_session_state()
+
+
+def reset_triage_only():
+    """TRIAGE 트랙만 리셋 (HUNTER 결과는 보존)."""
+    keys = [
+        "current_stage", "stage_1_input", "stage_2_logline",
+        "stage_3_hook", "stage_4_format", "stage_5_reference",
+        "stage_6_market", "stage_7_verdict", "selected_logline",
+        "seed_loaded_from_hunter",
+        # Stage 3 하위 단계 키 (3-A / 3-A+ 보강 / 3-B)
+        "stage_3_foundation",
+        "stage_3_reinforce_questions", "stage_3_reinforce_answers", "stage_3_reinforce_built",
+        "stage_3_hook_punch_questions", "stage_3_hook_punch_answers", "stage_3_hook_punch_built",
+        # 3-C+ Hook 약점 보완 (v2.1)
+        "stage_3_cplus_suggestions", "stage_3_cplus_rescore_count",
+    ]
+    for k in keys:
+        if k in st.session_state:
+            del st.session_state[k]
+    st.session_state["current_stage"] = 1
+    st.session_state["seed_loaded_from_hunter"] = False
+
+
+def reset_hunter_only():
+    """HUNTER 트랙만 리셋 (TRIAGE 진행 상태는 보존)."""
+    keys = [
+        "hunter_entry", "hunter_input", "hunter_classified",
+        "hunter_stage_data", "hunter_output",
+    ]
+    for k in keys:
+        if k in st.session_state:
+            del st.session_state[k]
+    st.session_state["hunter_entry"] = None
+    st.session_state["hunter_input"] = ""
+    st.session_state["hunter_stage_data"] = {}
+
+
+def transfer_hunter_seed_to_triage():
+    """HUNTER 출력 시드를 TRIAGE Stage 1 입력 형식으로 변환 후 전달.
+
+    HUNTER 시드 JSON 예상 스키마:
+    {
+        "title": str, "genre": str, "target_market": str,
+        "format_pref": str, "raw_idea": str,
+        "hunter_meta": {"entry": "1"~"5", "discovery_notes": [...]}
+    }
+    """
+    seed = st.session_state.get("hunter_output")
+    if not seed:
+        return False
+
+    st.session_state["stage_1_input"] = {
+        "title": seed.get("title", "(제목 미정)"),
+        "genre": seed.get("genre", "장르 미정"),
+        "target_market": seed.get("target_market", "한국 + 글로벌"),
+        "format": seed.get("format_pref", "미정 (Idea Engine이 추천)"),
+        "raw_idea": seed.get("raw_idea", ""),
+        "_hunter_meta": seed.get("hunter_meta", {}),
+    }
+    st.session_state["current_stage"] = 1
+    st.session_state["seed_loaded_from_hunter"] = True
+    return True
+
+
+# ═══════════════════════════════════════════════════════════
+# 진행 상태 JSON 저장·복원 (TRIAGE 중간 백업)
+# 각 Stage 완료 후 다운로드, Stage 1 진입 시 업로드 복원
+# ═══════════════════════════════════════════════════════════
+
+PROGRESS_STAGE_KEYS = [
+    "stage_1_input", "stage_2_logline", "stage_3_hook", "stage_4_format",
+    "stage_5_reference", "stage_6_market", "stage_7_verdict", "selected_logline",
+]
+PROGRESS_SCHEMA = "triage_progress_v1"
+
+
+def _detect_last_completed_stage() -> int:
+    """마지막 완료 Stage 번호 (0=없음)."""
+    pairs = [
+        (1, "stage_1_input"), (2, "stage_2_logline"), (3, "stage_3_hook"),
+        (4, "stage_4_format"), (5, "stage_5_reference"), (6, "stage_6_market"),
+        (7, "stage_7_verdict"),
+    ]
+    last = 0
+    for n, k in pairs:
+        if st.session_state.get(k):
+            last = n
+        else:
+            break
+    return last
+
+
+def build_progress_json(state: Dict[str, Any]) -> str:
+    """현재 TRIAGE 진행 상태를 JSON 문자열로 직렬화."""
+    last = _detect_last_completed_stage()
+    title = ""
+    s1 = state.get("stage_1_input")
+    if isinstance(s1, dict):
+        title = s1.get("title", "")
+    progress = {
+        "_idea_engine_progress": {
+            "version": ENGINE_VERSION,
+            "build_date": ENGINE_BUILD_DATE,
+            "saved_at": datetime.now().isoformat(),
+            "last_completed_stage": last,
+            "project_title": title,
+            "schema": PROGRESS_SCHEMA,
+        },
+    }
+    for k in PROGRESS_STAGE_KEYS:
+        progress[k] = state.get(k)
+    # HUNTER 인계 이력 보존
+    progress["_hunter_trace"] = {
+        "seed_loaded_from_hunter": state.get("seed_loaded_from_hunter", False),
+        "hunter_output": state.get("hunter_output"),
+    }
+    return json.dumps(progress, ensure_ascii=False, indent=2)
+
+
+def load_progress_json(uploaded_dict: Dict[str, Any]) -> tuple:
+    """업로드 JSON을 session_state에 복원. (success, message, last_stage)."""
+    meta = uploaded_dict.get("_idea_engine_progress", {})
+    if meta.get("schema") != PROGRESS_SCHEMA:
+        return False, f"호환 안 됨 (필요: {PROGRESS_SCHEMA})", 0
+    last = meta.get("last_completed_stage", 0)
+    if not isinstance(last, int) or last < 1:
+        return False, "유효하지 않은 last_completed_stage", 0
+    for k in PROGRESS_STAGE_KEYS:
+        if k in uploaded_dict:
+            st.session_state[k] = uploaded_dict[k]
+    htr = uploaded_dict.get("_hunter_trace", {})
+    if isinstance(htr, dict):
+        st.session_state["seed_loaded_from_hunter"] = htr.get("seed_loaded_from_hunter", False)
+        if htr.get("hunter_output"):
+            st.session_state["hunter_output"] = htr["hunter_output"]
+    next_stage = min(last + 1, 7) if last < 7 else 7
+    st.session_state["current_stage"] = next_stage
+    st.session_state["mode"] = "TRIAGE"
+    title = meta.get("project_title", "(제목 없음)")
+    saved = meta.get("saved_at", "")
+    return True, f"✓ '{title}' 복원 완료 — Stage {last}까지 완료. Stage {next_stage}부터 진행. (저장: {saved})", last
+
+
+def render_progress_save_button(stage_num: int):
+    """진행 상태 JSON 다운로드 버튼 (각 Stage 완료 페이지에 호출)."""
+    state = dict(st.session_state)
+    last = _detect_last_completed_stage()
+    if last < 1:
+        return
+    title = ""
+    s1 = state.get("stage_1_input")
+    if isinstance(s1, dict):
+        title = s1.get("title", "untitled").replace(" ", "_").replace("/", "_")[:40]
+    json_str = build_progress_json(state)
+    filename = f"IdeaProgress_{title}_진행백업_세션복구용_stage{last}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    st.download_button(
+        label=f"💾 진행 상태 백업 (Stage {last}까지) — JSON 다운로드",
+        data=json_str.encode("utf-8"),
+        file_name=filename,
+        mime="application/json",
+        key=f"progress_save_stage_{stage_num}",
+        use_container_width=True,
+        help="Stage 7 진단 전 백업 권장. 에러 발생 시 이 파일로 복원 가능.",
+    )
+
+
+def render_progress_load_widget():
+    """진행 상태 JSON 업로드 위젯 (Stage 1 상단에 호출)."""
+    with st.expander("📂 이전 진행 상태 JSON 복원하기", expanded=False):
+        st.caption("이전에 백업한 IdeaProgress_*.json 파일을 업로드하면 그 단계로 복원됩니다.")
+        uploaded = st.file_uploader(
+            "JSON 파일 업로드",
+            type=["json"],
+            key="progress_load_uploader",
+            label_visibility="collapsed",
+        )
+        if uploaded is not None:
+            try:
+                data = json.load(uploaded)
+                if st.button("→ 이 JSON으로 복원", key="progress_load_btn", type="primary", use_container_width=True):
+                    ok, msg, last = load_progress_json(data)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            except json.JSONDecodeError as e:
+                st.error(f"JSON 파싱 실패: {e}")
+            except Exception as e:
+                st.error(f"복원 실패: {type(e).__name__}: {e}")
+
+
+init_session_state()
+
+# ─────────────────────────────────────
+# Sidebar Engine Info (Writer Engine 동일)
+# ─────────────────────────────────────
 with st.sidebar:
     st.markdown(f"""
     <div style="padding:12px;background:#F0F2FF;border-radius:8px;border-left:3px solid #191970;font-family:'Pretendard',sans-serif;">
         <div style="font-size:.72rem;color:#191970;font-weight:700;letter-spacing:.05em;margin-bottom:4px;">ENGINE INFO</div>
-        <div style="font-size:1.05rem;font-weight:700;color:#191970;">Creator Engine</div>
+        <div style="font-size:1.05rem;font-weight:700;color:#191970;">Idea Engine</div>
         <div style="font-size:1.25rem;font-weight:900;color:#FFCB05;background:#191970;padding:2px 8px;border-radius:4px;display:inline-block;margin-top:4px;">
             {ENGINE_VERSION}
         </div>
         <div style="font-size:.7rem;color:#666;margin-top:8px;">
             Build: {ENGINE_BUILD_DATE}<br>
-            Status: {P.ENGINE_STATUS}
+            HUNTER 발굴 + TRIAGE 진단<br>
+            <span style="color:#191970;font-weight:600;">+ v1.1 Creator v2.5.2 정합 5키</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.2 Story Core 5원칙 · Hook&Punch 4키</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.3 장르 · 시장 좌표 2키</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.4.1 Market Lens (KR·JP·ID) + UI 동적</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.5 3-A+ 5원칙 보강 단계 (YELLOW·RED 자동 진입)</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.6 Story Core 5원칙 (명칭 정립)</span><br>
+            <span style="color:#191970;font-weight:600;">+ v1.6.1 시드/백업 파일명·라벨 구분</span><br>
+            <span style="color:#191970;font-weight:600;">+ v2.1 3-C+ Hook 약점 보완 (객관식 · 선택 게이트)</span><br>
+            <span style="color:#191970;font-weight:600;">+ v2.2 로그라인 포맷 어휘 차단 · 직업 역할 확인</span><br>
+            <span style="color:#191970;font-weight:600;">+ v2.3 포맷 구조화(9열거값·확신도) · 인계 메타데이터</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
-    st.caption("버전이 최신인지 확인하세요.")
 
-    # ─── v2.4.2: 리서치 기준일 표시 (한국 시간) ───
-    try:
-        from zoneinfo import ZoneInfo
-        _today = datetime.now(ZoneInfo("Asia/Seoul"))
-    except Exception:
-        _today = datetime.now()
-    st.caption(f"📅 리서치 기준일: {_today.strftime('%Y-%m-%d')}")
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-    # ─── v2.4.2: 마지막 리서치 사용량 표시 ───
-    _usage = st.session_state.get("last_research_usage")
-    if _usage:
-        st.markdown(f"""
-        <div style="padding:10px;background:#FFFEF0;border-radius:6px;border-left:3px solid #FFCB05;font-family:'Pretendard',sans-serif;margin-top:8px;">
-            <div style="font-size:.7rem;color:#191970;font-weight:700;letter-spacing:.05em;margin-bottom:4px;">🔍 마지막 리서치</div>
-            <div style="font-size:.72rem;color:#444;line-height:1.5;">
-                검색 <b>{_usage['search_count']}회</b><br>
-                입력 {_usage['input_tokens']:,} 토큰<br>
-                출력 {_usage['output_tokens']:,} 토큰<br>
-                <span style="color:#191970;font-weight:700;">약 ${_usage['est_cost_usd']:.3f}</span>
-            </div>
+    # ── 모드 전환 패널 (v2.0 신규) ──
+    current_mode = st.session_state.get("mode", "HOME")
+    mode_label_map = {
+        "HOME": "🏠 HOME",
+        "HUNTER": "🎯 HUNTER (발굴)",
+        "TRIAGE": "🔍 TRIAGE (진단)",
+    }
+    st.markdown(f"""
+    <div style="padding:10px;background:#191970;border-radius:8px;font-family:'Pretendard',sans-serif;">
+        <div style="font-size:.7rem;color:#FFCB05;font-weight:700;letter-spacing:.05em;margin-bottom:4px;">CURRENT MODE</div>
+        <div style="font-size:.95rem;color:#fff;font-weight:700;">{mode_label_map[current_mode]}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    st.markdown("###### 🔀 모드 전환")
+
+    if st.button("🏠 홈", key="nav_home", use_container_width=True):
+        st.session_state["mode"] = "HOME"
+        st.rerun()
+    if st.button("🎯 HUNTER 트랙", key="nav_hunter", use_container_width=True):
+        st.session_state["mode"] = "HUNTER"
+        st.session_state["hunter_entry"] = None
+        st.rerun()
+    if st.button("🔍 TRIAGE 트랙", key="nav_triage", use_container_width=True):
+        st.session_state["mode"] = "TRIAGE"
+        st.rerun()
+
+    # ── HUNTER → TRIAGE 시드 전송 (시드 준비된 경우만 노출) ──
+    if st.session_state.get("hunter_output"):
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style="padding:8px 10px;background:#FFCB05;border-radius:6px;font-family:'Pretendard',sans-serif;font-size:.75rem;color:#191970;font-weight:700;">
+            🔗 HUNTER 시드 준비됨
         </div>
         """, unsafe_allow_html=True)
+        if st.button("→ TRIAGE로 전송", key="seed_to_triage", use_container_width=True, type="primary"):
+            transfer_hunter_seed_to_triage()
+            st.session_state["mode"] = "TRIAGE"
+            st.rerun()
 
-# ─── Custom CSS ───
+    # ── TRIAGE 진행 중 백업 (Stage 1 이상 데이터가 있을 때만) ──
+    if _detect_last_completed_stage() >= 1:
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        last_stage_num = _detect_last_completed_stage()
+        st.markdown(f"""
+        <div style="padding:8px 10px;background:#E8F5E9;border-radius:6px;font-family:'Pretendard',sans-serif;font-size:.75rem;color:#1B5E20;font-weight:700;">
+            💾 진행 중 (Stage {last_stage_num} 완료)
+        </div>
+        """, unsafe_allow_html=True)
+        # 사이드바용 작은 버튼
+        _state_for_sidebar = dict(st.session_state)
+        _title_for_sidebar = ""
+        _s1 = _state_for_sidebar.get("stage_1_input")
+        if isinstance(_s1, dict):
+            _title_for_sidebar = _s1.get("title", "untitled").replace(" ", "_").replace("/", "_")[:30]
+        _sb_json = build_progress_json(_state_for_sidebar)
+        _sb_filename = f"IdeaProgress_{_title_for_sidebar}_진행백업_세션복구용_stage{last_stage_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        st.download_button(
+            label="💾 진행 백업 (세션 복구용)",
+            data=_sb_json.encode("utf-8"),
+            file_name=_sb_filename,
+            mime="application/json",
+            key="sidebar_progress_save",
+            use_container_width=True,
+            help="세션 휘발 시 복원용 백업입니다. Creator Engine 인계 시드가 아닙니다 — 최종 시드는 Stage 7 'LOCKED 시드 JSON 다운로드'에서 받으세요.",
+        )
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="padding:10px;background:#FFF8DC;border-radius:8px;font-family:'Pretendard',sans-serif;font-size:.78rem;">
+        <div style="font-weight:700;color:#191970;margin-bottom:4px;">🤖 모델 정책</div>
+        <div style="color:#444;">진단 ②~⑥: <b>Sonnet 4.6</b></div>
+        <div style="color:#444;">최종 판정 ⑦: <b>Opus 4.7</b></div>
+        <div style="color:#444;">HUNTER 발굴: <b>Sonnet 4.6</b></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.caption("버전이 최신인지 확인하세요.")
+
+# ─────────────────────────────────────
+# Custom CSS (Writer Engine v3.1 동일 톤)
+# ─────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -101,56 +418,34 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&display=swap');
 
 :root {
-    --navy: #191970;
-    --y: #FFCB05;
-    --bg: #F7F7F5;
-    --card: #FFFFFF;
-    --card-border: #E2E2E0;
-    --t: #1A1A2E;
-    --r: #D32F2F;
-    --g: #2EC484;
-    --dim: #8E8E99;
-    --light-bg: #EEEEF6;
+    --navy: #191970; --y: #FFCB05; --bg: #F7F7F5;
+    --card: #FFFFFF; --card-border: #E2E2E0; --t: #1A1A2E;
+    --g: #2EC484; --r: #D33F49; --o: #E8B800;
+    --dim: #8E8E99; --light-bg: #EEEEF6;
     --serif: 'Paperlogy', 'Noto Serif KR', 'Georgia', serif;
     --display: 'Playfair Display', 'Paperlogy', 'Georgia', serif;
     --body: 'Pretendard', -apple-system, sans-serif;
     --heading: 'Paperlogy', 'Pretendard', sans-serif;
 }
 
-/* ── 기본 타이포 ── */
 html, body, [class*="css"] {
-    font-family: var(--body);
-    color: var(--t);
-    -webkit-font-smoothing: antialiased;
+    font-family: var(--body); color: var(--t); -webkit-font-smoothing: antialiased;
 }
-
-/* ══ 라이트모드 강제 (전역) ══ */
 .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
 [data-testid="stMainBlockContainer"], [data-testid="stHeader"],
 [data-testid="stBottom"] {
-    background-color: var(--bg) !important;
-    color: var(--t) !important;
+    background-color: var(--bg) !important; color: var(--t) !important;
 }
-.stMarkdown, .stText, .stCode {
-    color: var(--t) !important;
-}
-h1, h2, h3, h4, h5, h6 { color: var(--navy) !important; font-family: var(--heading) !important; }
+.stMarkdown, .stText, .stCode { color: var(--t) !important; }
+h1,h2,h3,h4,h5,h6 { color: var(--navy) !important; font-family: var(--heading) !important; }
 p, span, label, div, li { color: inherit; }
 
-/* ── 사이드바 숨김 ── */
-section[data-testid="stSidebar"] { display: none; }
-
-/* ══ 입력 위젯 라이트 ══ */
 .stTextInput input, .stTextArea textarea,
 [data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea {
-    background-color: var(--card) !important;
-    color: var(--t) !important;
-    border: 1.5px solid var(--card-border) !important;
-    border-radius: 8px !important;
-    font-family: var(--body) !important;
-    font-size: 0.9rem !important;
-    padding: 0.6rem 0.8rem !important;
-    transition: border-color 0.2s;
+    background-color: var(--card) !important; color: var(--t) !important;
+    border: 1.5px solid var(--card-border) !important; border-radius: 8px !important;
+    font-family: var(--body) !important; font-size: 0.92rem !important;
+    padding: 0.65rem 0.85rem !important;
 }
 .stTextInput input:focus, .stTextArea textarea:focus,
 [data-testid="stTextInput"] input:focus, [data-testid="stTextArea"] textarea:focus {
@@ -159,39 +454,26 @@ section[data-testid="stSidebar"] { display: none; }
 }
 .stTextInput input::placeholder, .stTextArea textarea::placeholder,
 [data-testid="stTextInput"] input::placeholder, [data-testid="stTextArea"] textarea::placeholder {
-    color: var(--dim) !important;
-    font-size: 0.85rem !important;
+    color: var(--dim) !important; font-size: 0.85rem !important;
 }
-/* selectbox */
 .stSelectbox > div > div, [data-baseweb="select"] > div, [data-baseweb="select"] input {
-    background-color: var(--card) !important;
-    color: var(--t) !important;
-    border-color: var(--card-border) !important;
-    border-radius: 8px !important;
+    background-color: var(--card) !important; color: var(--t) !important;
+    border-color: var(--card-border) !important; border-radius: 8px !important;
 }
 [data-baseweb="popover"], [data-baseweb="menu"], [role="listbox"], [role="option"] {
-    background-color: var(--card) !important;
-    color: var(--t) !important;
+    background-color: var(--card) !important; color: var(--t) !important;
 }
 [role="option"]:hover { background-color: var(--light-bg) !important; }
-/* label */
-.stTextInput label, .stTextArea label, .stSelectbox label, .stRadio label {
-    color: var(--t) !important;
-    font-weight: 600 !important;
-    font-size: 0.82rem !important;
-    margin-bottom: 0.3rem !important;
+.stTextInput label, .stTextArea label, .stSelectbox label, .stRadio label, .stFileUploader label {
+    color: var(--t) !important; font-weight: 600 !important;
+    font-size: 0.82rem !important; margin-bottom: 0.3rem !important;
 }
 
-/* ══ 버튼 ══ */
 .stButton > button {
-    color: var(--t) !important;
-    border: 1.5px solid var(--card-border) !important;
-    background-color: var(--card) !important;
-    border-radius: 8px !important;
-    font-family: var(--body) !important;
-    font-weight: 600 !important;
-    font-size: 0.85rem !important;
-    padding: 0.5rem 1.2rem !important;
+    color: var(--t) !important; border: 1.5px solid var(--card-border) !important;
+    background-color: var(--card) !important; border-radius: 8px !important;
+    font-family: var(--body) !important; font-weight: 700 !important;
+    font-size: 0.88rem !important; padding: 0.55rem 1.2rem !important;
     transition: all 0.2s;
 }
 .stButton > button:hover {
@@ -200,6805 +482,4125 @@ section[data-testid="stSidebar"] { display: none; }
 }
 .stButton > button[kind="primary"],
 .stButton > button[data-testid="stBaseButton-primary"] {
-    background-color: var(--y) !important;
-    color: var(--navy) !important;
-    border-color: var(--y) !important;
-    font-weight: 700 !important;
+    background-color: var(--y) !important; color: var(--navy) !important;
+    border-color: var(--y) !important; font-weight: 800 !important;
 }
 .stButton > button[kind="primary"]:hover,
 .stButton > button[data-testid="stBaseButton-primary"]:hover {
     background-color: #E8B800 !important;
     box-shadow: 0 2px 12px rgba(255,203,5,0.3) !important;
 }
-
-/* ══ Expander ══ */
+.stDownloadButton > button {
+    color: var(--navy) !important; border: 1.5px solid var(--y) !important;
+    background-color: var(--y) !important; border-radius: 8px !important;
+    font-family: var(--body) !important; font-weight: 800 !important;
+    font-size: 0.88rem !important; padding: 0.55rem 1.2rem !important;
+}
 .stExpander, details, details summary {
-    background-color: var(--card) !important;
-    color: var(--t) !important;
-    border: 1px solid var(--card-border) !important;
-    border-radius: 8px !important;
+    background-color: var(--card) !important; color: var(--t) !important;
+    border: 1px solid var(--card-border) !important; border-radius: 8px !important;
 }
 details[open] > div { background-color: var(--card) !important; }
 .stExpander summary, .stExpander summary span { color: var(--t) !important; }
-
-/* ══ Alert 박스 ══ */
 .stAlert { color: var(--t) !important; border-radius: 8px !important; }
-
-/* ══ 내부 컨테이너 투명 ══ */
 [data-testid="stVerticalBlock"], [data-testid="stHorizontalBlock"],
 [data-testid="stColumn"] { background-color: transparent !important; }
 
-/* ══ Metric ══ */
-[data-testid="stMetric"] { background-color: var(--card) !important; color: var(--t) !important; }
-[data-testid="stMetric"] label { color: var(--dim) !important; }
-.stCaption, small { color: var(--dim) !important; }
-.stCheckbox label span, .stToggle label span { color: var(--t) !important; }
-
-/* ══ 배경색별 텍스트 강제 ══ */
-[style*="background:#FFCB05"] { color: var(--navy) !important; }
-[style*="background:#FFCB05"] * { color: var(--navy) !important; }
-[style*="background:#2EC484"] { color: #FFFFFF !important; }
-[style*="background:#2EC484"] * { color: #FFFFFF !important; }
-
-/* ═══════════════════════════════════
-   브랜딩 & 커스텀 컴포넌트
-   ═══════════════════════════════════ */
-
 .header {
-    font-size: 0.95rem;
-    font-weight: 700;
-    color: var(--navy);
-    letter-spacing: 0.2em;
-    margin-top: 0.5rem;
-    margin-bottom: 0.3rem;
-    font-family: var(--heading);
+    font-size: 0.85rem; font-weight: 700; color: var(--navy);
+    letter-spacing: 0.15em; font-family: var(--heading);
 }
-
 .brand-title {
-    font-size: 2.6rem;
-    font-weight: 900;
-    color: var(--navy);
-    font-family: var(--display);
-    letter-spacing: -0.02em;
-    margin-bottom: 0.15rem;
-    position: relative;
-    display: inline-block;
+    font-size: 2.6rem; font-weight: 900; color: var(--navy);
+    font-family: var(--display); letter-spacing: -0.02em;
+    position: relative; display: inline-block;
 }
 .brand-title::after {
-    content: '';
-    position: absolute;
-    bottom: 2px;
-    left: 0;
-    width: 100%;
-    height: 4px;
-    background: var(--y);
-    border-radius: 2px;
+    content: ''; position: absolute; bottom: 2px; left: 0;
+    width: 100%; height: 4px; background: var(--y); border-radius: 2px;
 }
-
 .sub {
-    font-size: 0.7rem;
-    color: var(--dim);
-    letter-spacing: 0.15em;
-    margin-top: 0.5rem;
-    margin-bottom: 1.5rem;
+    font-size: 0.7rem; color: var(--dim); letter-spacing: 0.15em;
+    margin-top: 0.5rem; margin-bottom: 1.5rem;
 }
-
-/* ── 카드 ── */
-.card {
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    border-radius: 10px;
-    padding: 1.2rem;
-    margin-bottom: 0.8rem;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.03);
-    transition: all 0.2s;
-}
-.card:hover {
-    border-color: var(--navy);
-    box-shadow: 0 3px 12px rgba(25,25,112,0.07);
-    transform: translateY(-1px);
-}
-
-/* ── 콜아웃 ── */
 .callout {
-    background: var(--light-bg);
-    border-left: 4px solid var(--navy);
-    padding: 0.9rem 1.1rem;
-    margin: 0.5rem 0;
-    border-radius: 0 8px 8px 0;
-    font-size: 0.88rem;
-    color: var(--t);
+    background: var(--light-bg); border-left: 4px solid var(--navy);
+    padding: 0.9rem 1.1rem; margin: 0.5rem 0;
+    border-radius: 0 8px 8px 0; font-size: 0.88rem; color: var(--t);
 }
-
-/* ── 섹션 라벨 ── */
 .cl {
-    color: var(--navy);
-    font-weight: 700;
-    font-size: 0.72rem;
-    letter-spacing: 0.03em;
-    margin-bottom: 0.3rem;
-    text-transform: uppercase;
+    color: var(--navy); font-weight: 700; font-size: 0.72rem;
+    letter-spacing: 0.03em; margin-bottom: 0.3rem; text-transform: uppercase;
 }
-
-/* ── 정보 블록 ── */
-.ri {
-    background: var(--light-bg);
-    border-radius: 8px;
-    padding: 0.9rem 1rem;
-    margin-bottom: 0.5rem;
-    font-size: 0.88rem;
-    line-height: 1.6;
-}
-.rl {
-    color: var(--navy);
-    font-weight: 700;
-    font-size: 0.72rem;
-    letter-spacing: 0.02em;
-}
-
-/* ── 큰 숫자 ── */
-.big {
-    font-size: 2.8rem;
-    font-weight: 900;
-    color: var(--navy);
-    text-align: center;
-    font-family: var(--heading);
-}
-.sm {
-    font-size: 0.7rem;
-    color: var(--dim);
-    text-align: center;
-}
-
-/* ── 뱃지 ── */
-.badge {
-    display: inline-block;
-    padding: 0.2rem 0.6rem;
-    border-radius: 5px;
-    font-size: 0.7rem;
-    font-weight: 600;
-}
-.b-done { background: var(--g); color: #fff; }
-.b-run  { background: var(--y); color: var(--navy); }
-.b-not  { background: #E8E8F0; color: var(--dim); }
-.b-fail { background: var(--r); color: #fff; }
-
-/* ── 노란 섹션 헤더 (웹 UI) ── */
 .section-header {
-    background: var(--y);
-    color: var(--navy);
-    padding: 0.6rem 1rem;
-    border-radius: 6px;
-    font-weight: 800;
-    font-size: 1rem;
-    font-family: var(--heading);
+    background: var(--y); color: var(--navy);
+    padding: 0.6rem 1rem; border-radius: 6px;
+    font-weight: 800; font-size: 1rem; font-family: var(--heading);
     margin: 1.5rem 0 0.8rem 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    display: flex; justify-content: space-between; align-items: center;
 }
 .section-header .en {
-    font-family: var(--display);
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    opacity: 0.7;
+    font-family: var(--display); font-size: 0.75rem;
+    font-weight: 700; letter-spacing: 0.05em; opacity: 0.7;
+}
+.small-meta {
+    font-size: 0.78rem; color: var(--dim);
+    margin-top: -0.2rem; margin-bottom: 0.5rem;
+}
+.beat-tag {
+    background: var(--navy); color: var(--y);
+    display: inline-block; padding: 0.2rem 0.7rem;
+    border-radius: 4px; font-size: 0.78rem; font-weight: 800;
+    letter-spacing: 0.04em; margin-bottom: 0.4rem;
+}
+.act-tag {
+    background: var(--navy); color: #fff;
+    display: inline-block; padding: 0.25rem 0.8rem;
+    border-radius: 4px; font-size: 0.82rem; font-weight: 800;
+    letter-spacing: 0.06em;
 }
 
-/* ══ Stepper ══ */
+/* ── Idea Engine 전용 컴포넌트 ── */
 .stepper {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin: 1.5rem 0 2rem 0;
-    gap: 0;
+    display: flex; gap: 4px; margin: 1.5rem 0;
+    padding: 0.8rem; background: var(--card);
+    border-radius: 10px; border: 1px solid var(--card-border);
+    overflow-x: auto;
 }
-.step-wrap {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
+.step {
+    flex: 1; text-align: center; padding: 0.5rem 0.4rem;
+    border-radius: 6px; font-size: 0.75rem;
+    font-family: var(--heading); font-weight: 700;
+    color: var(--dim); border: 1.5px solid transparent;
+    min-width: 90px;
 }
-.step-circle {
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.78rem;
-    font-weight: 700;
-    flex-shrink: 0;
-    border: 2px solid transparent;
-    transition: all 0.2s;
-}
-.step-circle.active {
-    background: var(--y);
-    color: var(--navy);
+.step.active {
+    background: var(--y); color: var(--navy);
     border-color: var(--y);
-    box-shadow: 0 0 0 4px rgba(255,203,5,0.2);
 }
-.step-circle.done {
-    background: var(--g);
-    color: #fff;
-    border-color: var(--g);
+.step.done {
+    background: var(--light-bg); color: var(--navy);
+    border-color: var(--navy);
 }
-.step-circle.upcoming {
-    background: #EDEDF0;
-    color: var(--dim);
-    border-color: #D8D8E0;
+.step .num {
+    font-size: 1rem; font-weight: 900; display: block;
+    font-family: var(--display);
 }
-.step-label {
-    font-size: 0.6rem;
-    margin-top: 0.35rem;
-    text-align: center;
-    width: 55px;
-    font-weight: 500;
-}
-.step-label.active { color: var(--navy); font-weight: 700; }
-.step-label.done { color: var(--g); font-weight: 600; }
-.step-label.upcoming { color: var(--dim); }
-.step-line {
-    width: 30px;
-    height: 2px;
-    margin: 0 2px;
-    flex-shrink: 0;
-    border-radius: 1px;
-}
-.step-line.done { background: var(--g); }
-.step-line.upcoming { background: #D8D8E0; }
 
-/* ══ 프로그레스 바 (공통) ══ */
-.progress-track {
-    flex: 1;
-    background: #E8E8F0;
-    border-radius: 4px;
-    height: 8px;
-    margin: 0 0.5rem;
+.score-card {
+    background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 8px; padding: 0.9rem 1.1rem; margin: 0.5rem 0;
+    border-left-width: 5px;
 }
-.progress-fill {
-    height: 100%;
-    background: var(--y);
-    border-radius: 4px;
-    transition: width 0.3s;
+.score-card.pass { border-left-color: var(--g); }
+.score-card.warn { border-left-color: var(--o); }
+.score-card.fail { border-left-color: var(--r); }
+.score-card .axis-name {
+    font-weight: 800; font-family: var(--heading);
+    color: var(--navy); font-size: 0.95rem;
 }
+.score-card .axis-score {
+    font-family: var(--display); font-weight: 900;
+    font-size: 1.4rem; margin-left: 0.5rem;
+}
+.score-card .axis-comment {
+    color: var(--dim); font-size: 0.85rem; margin-top: 0.2rem;
+}
+
+.metric-tile {
+    background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 10px; padding: 1rem; text-align: center;
+}
+.metric-tile .num {
+    font-family: var(--display); font-size: 2.2rem; font-weight: 900;
+    color: var(--navy); line-height: 1;
+}
+.metric-tile .label {
+    font-size: 0.75rem; color: var(--dim); margin-top: 0.4rem;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    font-family: var(--heading); font-weight: 700;
+}
+
+.verdict-box {
+    padding: 2.5rem 2rem; border-radius: 12px; margin: 1.5rem 0;
+    text-align: center; font-family: var(--display);
+    border: 3px solid;
+}
+.verdict-box.go { background: linear-gradient(135deg,#E8F5E9,#C8E6C9); border-color: var(--g); }
+.verdict-box.cond { background: linear-gradient(135deg,#FFF8E1,#FFECB3); border-color: var(--o); }
+.verdict-box.nogo { background: linear-gradient(135deg,#FFEBEE,#FFCDD2); border-color: var(--r); }
+.verdict-box .verdict-label {
+    font-size: 3rem; font-weight: 900; letter-spacing: 0.12em;
+    margin: 0; line-height: 1;
+}
+
+.locked-card {
+    background: var(--navy); color: white;
+    padding: 1.5rem 1.7rem; border-radius: 10px; margin: 1rem 0;
+    border-left: 6px solid var(--y);
+}
+.locked-card .field-label {
+    color: var(--y); font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.1em;
+    margin-bottom: 0.3rem; font-family: var(--heading); font-weight: 700;
+}
+.locked-card .field-value {
+    color: white; font-size: 0.95rem; margin-bottom: 1rem;
+    line-height: 1.5;
+}
+.locked-card .field-value:last-child { margin-bottom: 0; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─── Session State ───
-defaults = {
-    "view": "home",         # home | project | core | char_bible | structure | scene_design | treatment | tone_doc | export
-    "projects": {},
-    "cur": None,
-    "last_research_raw": "",
-    "last_research_usage": None,  # v2.4.2: 검색 횟수 + 토큰 + 비용 추정
-    "last_cards_raw": "",
-    "last_analysis_raw": "",
-    "last_core_raw": "",
-    "last_gate_raw": "",
-    "last_char_bible_raw": "",
-    "last_structure_story_raw": "",
-    "last_structure_diag_raw": "",
-    "last_structure_gate_raw": "",
-    "last_scene_design_raw": "",
-    "last_treatment_act1_raw": "",
-    "last_treatment_act2_raw": "",
-    "last_treatment_act3_raw": "",
-    "last_tone_doc_raw": "",
-    "last_error": "",
-}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+# ─────────────────────────────────────
+# Anthropic Client + JSON Parser
+# ─────────────────────────────────────
+def get_anthropic_client() -> Optional[Anthropic]:
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY"))
+    return Anthropic(api_key=api_key) if api_key else None
 
 
-# ─── Stepper (9단계) ───
-STEPS = [
-    ("project", "아이디어"),
-    ("project", "Brainstorm"),
-    ("core", "Core"),
-    ("char_bible", "Bible"),
-    ("structure", "Structure"),
-    ("scene_design", "Scene"),
-    ("treatment", "Treatment"),
-    ("tone_doc", "Tone"),
-    ("export", "Export"),
-]
-
-def render_stepper(current_view, project_data=None):
-    """상단 단계 네비게이션 바 — 완료된 단계는 클릭 이동 가능 (v2.3.4)"""
-    view_to_step = {
-        "project": 1 if project_data and project_data.get("brainstorm_cards") else 0,
-        "core": 2,
-        "char_bible": 3,
-        "structure": 4,
-        "scene_design": 5,
-        "treatment": 6,
-        "tone_doc": 7,
-        "export": 8,
-    }
-    current_idx = view_to_step.get(current_view, 0)
-
-    done_idx = -1
-    if project_data:
-        if project_data.get("brainstorm_cards"):
-            done_idx = 1
-        if project_data.get("brainstorm_analysis"):
-            ga = project_data["brainstorm_analysis"].get("gate_a_scores", {})
-            if ga.get("average", 0) >= 7.0:
-                done_idx = 1
-        if project_data.get("core"):
-            done_idx = 2
-        if project_data.get("char_bible"):
-            done_idx = 3
-        if project_data.get("structure_story"):
-            done_idx = 4
-        if project_data.get("scene_design"):
-            done_idx = 5
-        if project_data.get("treatment"):
-            done_idx = 6
-        if project_data.get("tone_doc"):
-            done_idx = 7
-
-    # 인라인 CSS — 버튼을 stepper 형태로 보이게
-    st.markdown("""
-    <style>
-    .stepper-nav [data-testid="column"] {
-        padding: 0 !important;
-    }
-    .stepper-nav .stButton button {
-        width: 100%;
-        min-height: 3.4rem;
-        padding: 0.4rem 0.2rem;
-        font-size: 0.72rem;
-        font-weight: 600;
-        line-height: 1.15;
-        border-radius: 8px;
-        white-space: normal;
-        word-break: keep-all;
-    }
-    .step-done button {
-        background: #191970 !important;
-        color: #FFCB05 !important;
-        border: 1px solid #191970 !important;
-    }
-    .step-done button:hover {
-        background: #FFCB05 !important;
-        color: #191970 !important;
-        border-color: #FFCB05 !important;
-    }
-    .step-active button {
-        background: #FFCB05 !important;
-        color: #191970 !important;
-        border: 2px solid #191970 !important;
-        cursor: default !important;
-    }
-    .step-upcoming button {
-        background: #F7F7F5 !important;
-        color: #B0B0B0 !important;
-        border: 1px dashed #D0D0D0 !important;
-        cursor: not-allowed !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # 단계 버튼을 가로로 배치
-    st.markdown('<div class="stepper-nav">', unsafe_allow_html=True)
-    cols = st.columns(len(STEPS))
-
-    for i, (view_key, label) in enumerate(STEPS):
-        # 상태 결정
-        if i < current_idx and i <= done_idx:
-            state = "done"
-        elif i == current_idx:
-            state = "active"
-        else:
-            state = "upcoming"
-
-        icon = "✓" if state == "done" else ("●" if state == "active" else str(i + 1))
-        btn_label = f"{icon}\n{label}"
-
-        with cols[i]:
-            # 상태별 컨테이너 스타일 적용
-            st.markdown(f'<div class="step-{state}">', unsafe_allow_html=True)
-
-            if state == "done":
-                # 완료된 단계: 클릭 시 해당 view로 점프
-                if st.button(btn_label, key=f"stepper_nav_{view_key}_{i}", use_container_width=True):
-                    st.session_state.view = view_key
-                    st.rerun()
-            elif state == "active":
-                # 현재 위치: 버튼 형태로 표시되지만 클릭해도 의미 없음 (disabled)
-                st.button(btn_label, key=f"stepper_nav_{view_key}_{i}", use_container_width=True, disabled=True)
-            else:
-                # 미완료: 비활성
-                st.button(btn_label, key=f"stepper_nav_{view_key}_{i}", use_container_width=True, disabled=True)
-
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-# ─── JSON Helpers ───
-# ═══════════════════════════════════════════════════
-# Project JSON Save/Load (v2.3.5 신규)
-# 목적: 세션 끊김 대비한 프로젝트 상태 복구용
-# 원칙: 전체 저장 / 전체 복원 — 부분 저장 금지
-# ═══════════════════════════════════════════════════
-
-def _get_project_stage(project: dict) -> str:
-    """프로젝트의 현재 완료 단계 파악 — 파일명 생성용"""
-    if project.get("tone_doc"):
-        return "Tone완료"
-    if project.get("treatment"):
-        return "Treatment완료"
-    if project.get("treatment_partial"):
-        return "Treatment진행중"
-    if project.get("scene_design"):
-        return "Scene완료"
-    if project.get("structure_story"):
-        return "Structure완료"
-    if project.get("char_bible"):
-        return "Character완료"
-    if project.get("core"):
-        return "Core완료"
-    if project.get("brainstorm_cards"):
-        return "Brainstorm완료"
-    return "초기"
-
-
-def save_project_to_json(project: dict, engine_version: str = "v2.7.2") -> str:
-    """프로젝트 전체를 JSON 문자열로 직렬화.
-    
-    Args:
-        project: Streamlit session_state의 project dict
-        engine_version: 현재 엔진 버전 (호환성 검증용)
-    
-    Returns:
-        UTF-8 JSON 문자열
-    """
-    # 저장 가능한 형태로 복사
-    payload = {
-        "_meta": {
-            "blue_jeans_engine": "Creator Engine",
-            "engine_version": engine_version,
-            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "stage": _get_project_stage(project),
-        },
-        "project": project,
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def load_project_from_json(json_str: str) -> dict:
-    """JSON 문자열에서 프로젝트 복원.
-    
-    Args:
-        json_str: save_project_to_json 으로 저장된 JSON 문자열
-    
-    Returns:
-        {"project": {...}, "meta": {...}, "warnings": [...]} 
-    
-    Raises:
-        ValueError: 형식이 올바르지 않을 때
-    """
-    try:
-        payload = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"유효한 JSON 파일이 아닙니다: {e}")
-    
-    # 구조 검증
-    if not isinstance(payload, dict):
-        raise ValueError("JSON 최상위가 객체가 아닙니다.")
-    if "project" not in payload:
-        raise ValueError("project 필드가 없습니다. Creator Engine 프로젝트 파일이 맞는지 확인하세요.")
-    
-    project = payload["project"]
-    meta = payload.get("_meta", {})
-    warnings = []
-    
-    # 필수 필드 검증
-    required_fields = ["project_id", "title", "idea_text", "genre", "format"]
-    missing = [f for f in required_fields if f not in project]
-    if missing:
-        raise ValueError(f"필수 필드 누락: {', '.join(missing)}")
-    
-    # 엔진 버전 호환성 체크 (경고만, 실패 아님)
-    saved_version = meta.get("engine_version", "unknown")
-    current_version = "v2.7.2"
-    if saved_version != current_version:
-        warnings.append(
-            f"엔진 버전 차이 — 저장 시: {saved_version} / 현재: {current_version}. "
-            f"대부분 호환되지만, 이후 단계 실행 시 예상치 못한 동작이 있을 수 있습니다."
-        )
-    
-    return {
-        "project": project,
-        "meta": meta,
-        "warnings": warnings,
-    }
-
-
-def extract_json_object(text: str) -> str:
-    """응답 텍스트에서 JSON 객체만 추출"""
+def safe_json_loads(text: str) -> Dict[str, Any]:
+    """4단계 JSON 복구 시스템"""
     text = text.strip()
+    text = re.sub(r"^```json\s*", "", text)
+    text = re.sub(r"^```\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
 
-    # 코드블록 제거
-    if text.startswith("```json"):
-        text = text[7:]
-    elif text.startswith("```"):
-        text = text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-
-    text = text.strip()
-
-    # 첫 { 부터 마지막 } 까지 추출
-    start = text.find("{")
-    end = text.rfind("}")
-
-    if start == -1 or end == -1:
-        raise ValueError("JSON 객체 시작/끝을 찾지 못했습니다.")
-
-    return text[start:end + 1]
-
-
-def safe_json_loads(text: str):
-    """JSON 파싱 (강화된 복구 로직 — 5단계)"""
-    cleaned = extract_json_object(text)
-    cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
-
-    # 0단계: 문자열 값 내부의 raw 제어 문자 제거 (Invalid control character 방지)
-    # JSON 문자열 안에 raw \n, \r, \t가 있으면 파싱 실패함
-    def _sanitize_control_chars(s):
-        """JSON 문자열 값 내부의 제어 문자를 공백으로 치환"""
-        result = []
-        in_string = False
-        i = 0
-        while i < len(s):
-            c = s[i]
-            if c == '"' and (i == 0 or s[i-1] != '\\'):
-                in_string = not in_string
-                result.append(c)
-            elif in_string and c in '\n\r':
-                result.append(' ')
-            elif in_string and c == '\t':
-                result.append(' ')
-            elif in_string and ord(c) < 32 and c not in ('\n', '\r', '\t'):
-                result.append(' ')  # 기타 제어 문자
-            else:
-                result.append(c)
-            i += 1
-        return ''.join(result)
-
-    cleaned = _sanitize_control_chars(cleaned)
-
-    # 1차: 그대로 파싱
     try:
-        return json.loads(cleaned)
+        return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # 2차: 문자열 내부 줄바꿈 이스케이프 + 쌍따옴표 → 작은따옴표
     try:
-        result = []
-        i = 0
-        n = len(cleaned)
-        while i < n:
-            ch = cleaned[i]
-            if ch == '"':
-                result.append(ch)
-                i += 1
-                str_chars = []
-                while i < n:
-                    c = cleaned[i]
-                    if c == '\\' and i + 1 < n:
-                        next_c = cleaned[i + 1]
-                        if next_c == '"':
-                            str_chars.append("'")
-                            i += 2
-                        elif next_c in ('n', 'r', 't', '\\', '/', 'b', 'f', 'u'):
-                            str_chars.append(c)
-                            str_chars.append(next_c)
-                            i += 2
-                        else:
-                            str_chars.append(next_c)
-                            i += 2
-                    elif c == '"':
-                        # 문자열 종료인지 판단 — 다음 비공백 문자 확인
-                        rest = cleaned[i + 1:] if i + 1 < n else ""
-                        rest_stripped = rest.lstrip()
-                        if not rest_stripped:
-                            break  # EOF
-                        nc = rest_stripped[0]
-                        if nc == ':':
-                            break  # key-value 구분자 → 문자열 종료
-                        elif nc == ',':
-                            # 쉼표 뒤를 확인: " 또는 } 또는 ] → JSON 구조
-                            after_comma = rest_stripped[1:].lstrip()
-                            if not after_comma or after_comma[0] in '"{}[]0123456789tfn':
-                                break  # 문자열 종료
-                            else:
-                                str_chars.append("'")
-                                i += 1
-                        elif nc in '}]':
-                            break  # 객체/배열 종료
-                        elif nc == '"':
-                            # 다음이 곧바로 " → 이건 빈 문자열이 아니라 키 시작
-                            break
-                        else:
-                            str_chars.append("'")
-                            i += 1
-                    elif c in '\n\r':
-                        str_chars.append(' ')
-                        i += 1
-                    elif c == '\t':
-                        str_chars.append(' ')
-                        i += 1
-                    else:
-                        str_chars.append(c)
-                        i += 1
-                result.append(''.join(str_chars))
-                result.append('"')
-                i += 1
-            else:
-                result.append(ch)
-                i += 1
-
-        fixed = ''.join(result)
-        fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
-        return json.loads(fixed)
-    except (json.JSONDecodeError, IndexError):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1:
+            return json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
         pass
 
-    # 3차: 에러 위치 기반 반복 수정 (최대 30회)
-    current = cleaned
-    for _ in range(30):
-        try:
-            return json.loads(current)
-        except json.JSONDecodeError as e:
-            pos = e.pos
-            if pos is None or pos <= 0:
-                break
-            # 에러 위치 주변에서 문제가 되는 " 찾아서 ' 로 교체
-            found = False
-            for j in range(pos, max(0, pos - 100), -1):
-                if j < len(current) and current[j] == '"':
-                    before = current[j - 1] if j > 0 else ''
-                    after_c = current[j + 1] if j + 1 < len(current) else ''
-                    # 구조적 위치가 아닌 " → 내부 따옴표로 판단
-                    if before not in ('{', '[', ',', ':', '\\') and after_c not in (':', ',', '}', ']'):
-                        current = current[:j] + "'" + current[j + 1:]
-                        found = True
-                        break
-                    elif before == '\\':
-                        # \" → ' (이스케이프 제거)
-                        current = current[:j - 1] + "'" + current[j + 1:]
-                        found = True
-                        break
-            if not found:
-                # 에러 위치 근처의 줄바꿈을 공백으로
-                for j in range(max(0, pos - 5), min(len(current), pos + 5)):
-                    if current[j] in '\n\r\t':
-                        current = current[:j] + ' ' + current[j + 1:]
-                        found = True
-                        break
-            if not found:
-                break
-
-    # 4차: 최후 수단 — 모든 문자열 값 내부 " → '
     try:
-        aggressive = re.sub(
-            r'(?<=: ")(.*?)(?="\s*[,}\]])',
-            lambda m: m.group(0).replace('"', "'"),
-            cleaned,
-            flags=re.DOTALL
-        )
-        aggressive = re.sub(r",\s*([}\]])", r"\1", aggressive)
-        return json.loads(aggressive)
-    except json.JSONDecodeError as e:
-        raise e
-
-
-# ─── API Client ───
-def get_client():
-    try:
-        import anthropic
-    except ImportError:
-        raise RuntimeError("anthropic 패키지가 설치되지 않았습니다. requirements.txt를 확인하세요.")
-
-    if "ANTHROPIC_API_KEY" not in st.secrets:
-        raise RuntimeError("ANTHROPIC_API_KEY가 secrets에 설정되지 않았습니다.")
-
-    return anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
-
-
-def _build_project_locked_block(project: dict) -> str:
-    """프로젝트의 LOCKED 항목으로 프롬프트 주입 블록 생성.
-    v2.3: OPEN 필드 폐지. LOCKED 항목이 없으면 빈 문자열 반환."""
-    locked = project.get("locked_items", [])
-    if not locked:
-        return ""
-    return P.build_locked_block(locked)
-
-
-# ─── API Call: Research (v2.4.2: web_search 통합 + 최신 작품 우선 + 토큰 로깅) ───
-def call_research(idea, genre, market):
-    """
-    v2.4.2 변경:
-      - web_search 도구 활성화 (max_uses=3, 4개 도메인 화이트리스트)
-      - SYSTEM_RESEARCH 함수형 호출로 동적 날짜 주입
-      - existing_works 스키마에 platform 필드 추가
-      - max_tokens 16000 → 8000 (토큰 절약)
-      - 토큰 사용량 + 검색 횟수 세션 로깅 (사이드바 표시용)
-    """
-    try:
-        client = get_client()
-
-        # v2.4.2: 함수 호출로 변경 (동적 날짜 주입)
-        system_prompt = P.get_system_research()
-
-        user_prompt = f"""[입력]
-아이디어: {idea}
-장르: {genre}
-타겟: {market}
-
-[JSON 스키마]
-{{
-  "search_keywords": [],
-  "real_events": [
-    {{
-      "id": 1,
-      "title": "",
-      "summary": "",
-      "source": "",
-      "year": "",
-      "relevance": "",
-      "story_potential": ""
-    }}
-  ],
-  "existing_works": [
-    {{
-      "id": 1,
-      "title": "",
-      "type": "",
-      "country": "",
-      "year": "",
-      "platform": "",
-      "summary": "",
-      "similarity": "",
-      "difference_opportunity": ""
-    }}
-  ],
-  "research_summary": {{
-    "total_real_events": 0,
-    "total_existing_works": 0,
-    "key_insight": ""
-  }}
-}}
-
-규칙:
-- real_events 3~7개 (학습 데이터 우선, 검색은 최신 사건만)
-- existing_works 3~7개 (검색 적극 활용 — 최신 영화·드라마 우선)
-- existing_works의 70% 이상은 최근 3년 작품
-- source는 가능한 한 짧게
-- key_insight는 2문장 이내
-- platform 필드 필수 (극장/Netflix/Wavve/Watcha/TVING/Disney+/IPTV/미상 중)
-"""
-
-        # v2.4.2: web_search 도구 추가 (max_uses=3, 5개 도메인 화이트리스트)
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=8000,
-            temperature=0.2,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            tools=[{
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": 3,
-                "allowed_domains": [
-                    "vkobis.or.kr",   # 영진위 온라인 통합전산망 (IPTV+OTT 박스오피스)
-                    "kobis.or.kr",    # 영진위 영화 정보 DB
-                    "cine21.co.kr",   # 씨네21 — 한국 영화 매체 (인터뷰·비평·라인업)
-                    "cine21.com",     # 씨네21 — 같은 매체 다른 도메인
-                    "imdb.com",       # 글로벌 영화·드라마 DB
-                    "variety.com",    # 할리우드 산업·신작 보도
-                    # v2.4.2.1: yna.co.kr 제거 — Anthropic crawler 차단 (invalid_request_error)
-                ],
-            }],
-        )
-
-        # v2.4.2: 토큰 사용량 + 검색 횟수 세션 로깅
-        try:
-            usage = getattr(response, 'usage', None)
-            if usage:
-                # 검색 횟수: server_tool_use.web_search_requests (모델 응답에 따라 키 다를 수 있음)
-                search_count = 0
-                stu = getattr(usage, 'server_tool_use', None)
-                if stu:
-                    search_count = getattr(stu, 'web_search_requests', 0) or 0
-
-                input_tokens = getattr(usage, 'input_tokens', 0) or 0
-                output_tokens = getattr(usage, 'output_tokens', 0) or 0
-
-                # 비용 추정 (Sonnet 4.6 기준 입력 $3/M, 출력 $15/M, 검색 $0.01/회)
-                est_cost = (
-                    (input_tokens / 1_000_000) * 3.0
-                    + (output_tokens / 1_000_000) * 15.0
-                    + search_count * 0.01
-                )
-
-                st.session_state["last_research_usage"] = {
-                    "search_count": search_count,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "est_cost_usd": round(est_cost, 4),
-                }
-        except Exception:
-            # 사용량 로깅 실패는 본 기능에 영향 주지 않도록 무시
-            pass
-
-        # 텍스트 블록만 추출 (web_search tool_use/tool_result 블록은 자동 무시)
-        txt = "".join(
-            block.text for block in response.content if hasattr(block, "text")
-        ).strip()
-        st.session_state["last_research_raw"] = txt
-
-        return safe_json_loads(txt)
-
-    except Exception as e:
-        st.error(f"리서치 실패: {e}")
-        raw = st.session_state.get("last_research_raw")
-        if raw:
-            with st.expander("🔧 Research Raw Response (디버그)"):
-                st.text_area("Raw", raw, height=300)
-        return None
-
-
-# ─── API Call: Brainstorm Cards (1단계) ───
-def call_brainstorm_cards(idea, genre, market, fmt, research=None, locked_block=""):
-    """1단계: 아이디어 카드 10개 + Top 3 생성 (토큰 집중)"""
-    try:
-        client = get_client()
-
-        system_prompt = P.SYSTEM_BRAINSTORM_CARDS
-
-        research_block = ""
-        if research:
-            research_block = f"""
-[리서치 참고]
-{json.dumps(research, ensure_ascii=False)}
-
-규칙:
-- 실화/뉴스는 소재 참고용
-- 기존작은 차별화 포인트 참고용
-- 동일 구조/설정 반복 금지
-"""
-
-        user_prompt = f"""[입력]
-아이디어: {idea}
-장르: {genre}
-타겟: {market}
-포맷: {fmt}
-{locked_block}
-{research_block}
-
-[JSON 스키마]
-{{
-  "idea_type": "story|mood|hybrid",
-  "idea_type_diagnosis": "",
-  "idea_type_action": "",
-  "idea_cards": [
-    {{
-      "id": 1,
-      "title": "10자 이내",
-      "logline_seed": "",
-      "protagonist": "",
-      "conflict": "",
-      "hook": "",
-      "visual_image": "",
-      "genre": "",
-      "scores": {{
-        "active_hero": 0.0,
-        "conflict_clarity": 0.0,
-        "visual_power": 0.0,
-        "genre_immediacy": 0.0,
-        "originality": 0.0,
-        "market_fit": 0.0
-      }},
-      "total_score": 0.0
-    }}
-  ],
-  "top3": [
-    {{
-      "rank": 1,
-      "card_id": 0,
-      "reason": ""
-    }}
-  ]
-}}
-
-규칙:
-- idea_cards는 10개 (10개 초과 금지)
-- top3는 3개
-- total_score는 6개 점수 평균, 소수점 1자리
-- scores 각 항목은 0.0~10.0
-- idea_type_diagnosis: 이 아이디어의 현재 상태를 이 이야기에만 해당하는 구체적 언어로 1문장. "~이 필요하다" 같은 추상 진단 금지. 예: "주인공의 욕망은 선명하지만 적대자가 없어 갈등이 발생하지 않는다"
-- idea_type_action: idea_type_diagnosis에 대한 즉각적 처방 1문장. 반드시 "~하라" 형태로. 예: "주인공이 원하는 것을 빼앗는 구체적 인물 또는 시스템을 설정하라"
-- 각 카드의 logline_seed는 1문장, 50자 이내
-- protagonist는 1문장, 30자 이내
-- conflict는 1문장, 40자 이내
-- hook는 1문장, 30자 이내
-- visual_image는 1문장, 40자 이내
-- reason은 1문장, 30자 이내
-- 절대로 장문 서술하지 말 것. 짧고 강하게.
-"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=16000,
-            temperature=0.35,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-
-        # 토큰 한계 도달 감지
-        if response.stop_reason == "max_tokens":
-            st.warning("⚠️ 응답이 토큰 한계에서 잘렸습니다. 재시도합니다...")
-            # 재시도: max_tokens 더 올리고 카드 수 줄이기
-            retry_prompt = user_prompt.replace("idea_cards는 10개", "idea_cards는 7개")
-            response = client.messages.create(
-                model=ANTHROPIC_MODEL,
-                max_tokens=16000,
-                temperature=0.35,
-                system=system_prompt,
-                messages=[{"role": "user", "content": retry_prompt}]
-            )
-
-        txt = "".join(
-            block.text for block in response.content if hasattr(block, "text")
-        ).strip()
-        st.session_state["last_cards_raw"] = txt
-
-        return safe_json_loads(txt)
-
-    except Exception as e:
-        st.session_state["last_error"] = str(e)
-        st.error(f"카드 생성 실패: {e}")
-        raw = st.session_state.get("last_cards_raw")
-        if raw:
-            with st.expander("🔧 Cards Raw Response (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-# ─── API Call: Brainstorm Analysis (2단계) ───
-def call_brainstorm_analysis(idea, genre, market, fmt, top3_cards, research=None, locked_block=""):
-    """2단계: Top 3 기반 시장분석 + 차별화 + Gate A 채점"""
-    try:
-        client = get_client()
-
-        system_prompt = P.SYSTEM_BRAINSTORM_ANALYSIS
-
-        research_block = ""
-        if research:
-            research_block = f"""
-[리서치 참고]
-{json.dumps(research, ensure_ascii=False)}
-"""
-
-        user_prompt = f"""[입력]
-아이디어: {idea}
-장르: {genre}
-타겟: {market}
-포맷: {fmt}
-{locked_block}
-
-[Top 3 컨셉 카드]
-{json.dumps(top3_cards, ensure_ascii=False)}
-{research_block}
-
-[JSON 스키마]
-{{
-  "market_context": {{
-    "target_market": "",
-    "market_insight": "",
-    "cultural_code": "",
-    "market_risk": "",
-    "reference_titles": []
-  }},
-  "format_context": {{
-    "selected_format": "",
-    "format_rationale": "",
-    "structure_note": ""
-  }},
-  "research_applied": {{
-    "real_events_used": [],
-    "inspiration_note": ""
-  }},
-  "hook_sentence": "",
-  "differentiation": ["", "", ""],
-  "development_priority": {{
-    "recommended_direction": "",
-    "next_step": "",
-    "risk": ""
-  }},
-  "format_fit": {{
-    "current_format": "작가가 확정한 포맷을 그대로 기재",
-    "recommended_format": "영화 | 시리즈 | 미니시리즈(4~8화) — 소재에 가장 맞는 것 하나",
-    "match": true,
-    "event_density": "이 소재가 지탱할 수 있는 주요 사건 수와 밀도 1문장",
-    "character_load": "축이 되는 인물 수와 각 인물이 요구하는 분량 1문장",
-    "rationale": "왜 그 포맷인지 2문장 이내. 사건 밀도와 인물 수를 근거로 제시",
-    "if_forced": "작가가 확정한 포맷을 유지할 경우 무엇을 덜어내거나 늘려야 하는지 1문장"
-  }},
-  "gate_a_scores": {{
-    "protagonist_visible": 0.0,
-    "conflict_one_line": 0.0,
-    "differentiation": 0.0,
-    "poster_image": 0.0,
-    "market_potential": 0.0,
-    "average": 0.0
-  }}
-}}
-
-규칙:
-- gate_a_scores.average = 5개 항목의 평균, 소수점 1자리 반올림
-- 모든 점수는 0.0~10.0
-- hook_sentence는 1위 컨셉의 핵심을 기반으로 작성
-- market_insight, cultural_code, market_risk, format_rationale, structure_note는 각 2문장 이내
-- differentiation은 정확히 3개
-
-[format_fit 작성 규칙 — v2.7.1]
-- current_format에는 위 [입력]의 포맷 값을 그대로 기재한다.
-- recommended_format은 소재 자체가 요구하는 포맷이다. 작가의 선택에 맞추지 마라.
-- match는 두 값이 실질적으로 같으면 true, 다르면 false.
-- ★ 이것은 권고이지 판정이 아니다. 작가의 선택을 바꾸라고 요구하지 마라.
-  match가 false여도 if_forced에 "이 포맷을 유지하려면 무엇을 조정해야 하는지"를
-  건설적으로 제시하는 것으로 끝낸다.
-- 판단 근거는 사건 밀도와 인물 수여야 한다. 흥행성·플랫폼 트렌드를 근거로 들지 마라.
-"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=2000,
-            temperature=0.3,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-
-        txt = "".join(
-            block.text for block in response.content if hasattr(block, "text")
-        ).strip()
-        st.session_state["last_analysis_raw"] = txt
-
-        return safe_json_loads(txt)
-
-    except Exception as e:
-        st.session_state["last_error"] = str(e)
-        st.error(f"분석 실패: {e}")
-        raw = st.session_state.get("last_analysis_raw")
-        if raw:
-            with st.expander("🔧 Analysis Raw Response (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-# ─── API Call: Core Build Main (1단계) ───
-def call_core_build_main(idea, genre, market, fmt, selected_concept, research=None, locked_block="",
-                          fact_based=False, historical=False, film_type=""):
-    """Core Build 1단계: Logline + Intent + World + Character + Goal/Need/Strategy"""
-    try:
-        client = get_client()
-
-        # v2.4.0: 시대극 자동 감지 컨텍스트 추출
-        _locked_text, _idea_text = _get_period_scan_context({
-            "idea_text": idea or "",
-            "genre": genre,
-            "title": (selected_concept or {}).get("title", "") if selected_concept else "",
-            "locked_items": [locked_block] if locked_block else [],
-        })
-        system_prompt = P.build_system_core(
-            genre, fact_based=fact_based, historical=historical, film_type=film_type,
-            locked_text=_locked_text, idea_text=_idea_text, fmt=fmt,
-        )
-
-        research_block = ""
-        if research:
-            research_block = f"\n[리서치 참고]\n{json.dumps(research, ensure_ascii=False)}"
-
-        user_prompt = f"""[입력]
-아이디어: {idea}
-장르: {genre}
-타겟: {market}
-포맷: {fmt}
-
-[선정 컨셉]
-{json.dumps(selected_concept, ensure_ascii=False)}
-{research_block}
-{locked_block}
-
-[JSON 스키마]
-{{
-  "logline_pack": {{
-    "original": "원본 로그라인 1문장",
-    "washed": "서사 불순물 제거한 정제 로그라인 1문장",
-    "investor": "투자자용 1문장",
-    "director": "감독용 1문장",
-    "character_hook": "배우용 캐릭터 훅 1문장"
-  }},
-  "project_intent": {{
-    "subject": "소재 기획의도 — 이 소재가 왜 지금 필요한가, 어떤 현실/감정/사회적 맥락과 연결되는가 (2~3문장)",
-    "genre_approach": "장르 기획의도 — 이 장르 접근이 왜 유효한가, 관객에게 어떤 체험을 주는가 (2~3문장)",
-    "market_rationale": "시장 기획의도 — 타겟 시장에서 왜 통하는가, 어떤 수요/트렌드/공백에 대응하는가 (2~3문장)",
-    "pitch": "엘리베이터 피치 1문장",
-    "theme": "주제 1문장",
-    "tone_manner": ["톤앤매너 키워드 3~5개"]
-  }},
-  "goal_need_strategy": {{
-    "goal": "주인공의 목적/욕망 1문장",
-    "need": "진짜 결핍 (본인은 모르는 것) 1문장",
-    "strategy": "해결 전략/방법 1문장",
-    "risk": "실패 시 잃는 것 1문장",
-    "ending_payoff": "결말에서 G/N/S가 어떻게 회수되는가 1문장"
-  }},
-  "narrative_drive": {{
-    "desire_origin": "loss 또는 lack — 주인공의 욕망이 상실에서 시작되었는가, 결핍에서 시작되었는가",
-    "origin_detail": "구체적으로 무엇을 잃었는가(loss) 또는 무엇이 없었는가(lack) 1문장",
-    "arc_direction": "loss면 회복/복수/대체 중 택1, lack이면 획득/성장/증명 중 택1",
-    "resolution_strategy": "이 이야기만의 독특한 해결 방식 — 기존작과 뭐가 다른가 1문장",
-    "goal_need_gap": "Goal(외적 욕망)과 Need(내적 필요) 사이의 간극 1문장 — 이 간극이 이야기를 끌고 간다",
-    "cost": {{
-      "relation": "주인공의 Strategy가 주변 관계를 어떻게 망가뜨리는가 1문장 — 2막 후반에 누적되어 실재 손상이 될 것",
-      "self": "주인공의 Strategy가 주인공 자신을 어떻게 마모시키는가 1문장 — 3막에서 자기 자신과 직면하게 할 것",
-      "world": "주인공의 Strategy가 주인공이 지키려던 세계(공동체/직업/가치)를 어떻게 무너뜨리는가 1문장"
-    }},
-    "strategy_transformation": "3막에서 Strategy_1이 어떻게 Strategy_2로 전환되는가 1문장 — 외적 선택이 아닌 내적 전환으로 기술"
-  }},
-  "bjnd_four_axis_check": {{
-    "necessity": {{
-      "question": "이 인물이 왜 지금 이렇게 살아야만 했는가?",
-      "answer": "Lack/Loss의 필연성을 입증하는 1~2문장 — 막연한 설정이 아닌 구체적 사건/기억 기반",
-      "life_permeation": "이 Lack/Loss이 인물의 일상을 관통하는 3가지 방식 (각 1문장)"
-    }},
-    "authenticity": {{
-      "question": "이 Strategy는 이 인물이 아니면 불가능한가?",
-      "substitution_test": "이 Strategy를 다른 유명 작품 주인공에게 붙여도 성립하는가? PASS(다른 인물에게 붙일 수 없음) 또는 FAIL(누구나 쓸 수 있음)",
-      "organic_link": "직업 + Lack + Strategy를 한 문장으로 유기적으로 연결",
-      "author_justification": "왜 이 인물은 이런 방식으로 해결하려 하는가? 작가 시선이 담긴 1문장"
-    }},
-    "empathy": {{
-      "question": "관객이 이 인물의 Cost를 보며 자기 자신을 떠올릴 것인가?",
-      "universal_wound": "이 Cost가 건드리는 동시대 보편 상처 1문장",
-      "audience_mirror": "관객이 이 인물에서 자기를 발견할 지점 1문장",
-      "resonance_target": "특히 공감할 관객층 (예: 30대 여성 직장인, 40대 남성 아버지 등)"
-    }},
-    "potency": {{
-      "question": "이 인물의 Strategy 전환이 관객 마음에 얼마나 큰 흔적을 남길 것인가?",
-      "strategy_arc": "1막 Strategy_1 → 3막 Strategy_2, 한 문장 대비",
-      "signature_moment": "변화가 완성되는 결정적 한 순간 1문장",
-      "afterimage": "영화 끝난 뒤에도 관객이 떠올릴 잔상 이미지 1컷"
-    }},
-    "audience_scenes": {{
-      "laughter_scene": "관객이 웃을 장면 1~2개 구체 (로코/코미디 아닐 경우 빈 문자열)",
-      "heartache_scene": "관객이 가슴 먹먹해질 장면 1~2개 구체",
-      "self_reflection_scene": "관객이 '나였다면 어떻게 했을까'를 고민할 장면 1개 구체",
-      "memorable_line_or_image": "영화 끝난 후 관객 입에 남을 장면 1개"
-    }}
-  }},
-  "genre_expectation_check": {{
-    "genre_fun_alive": "true 또는 false — 이 장르의 재미 본질이 살아있는가",
-    "genre_fun_diagnosis": "이 작품에서 장르 재미가 어떻게 살아있는지 3줄 진단",
-    "checklist": {{
-      "item_label_1": "YES 또는 NO + 1문장 근거 — 해당 장르 체크리스트 항목 1",
-      "item_label_2": "YES 또는 NO + 1문장 근거 — 해당 장르 체크리스트 항목 2",
-      "item_label_3": "YES 또는 NO + 1문장 근거 — 해당 장르 체크리스트 항목 3",
-      "item_label_4": "YES 또는 NO + 1문장 근거 — 해당 장르 체크리스트 항목 4",
-      "item_label_5": "YES 또는 NO + 1문장 근거 — 해당 장르 체크리스트 항목 5",
-      "item_label_6": "YES 또는 NO + 1문장 근거 — 해당 장르 체크리스트 항목 6 (있으면)",
-      "item_label_7": "YES 또는 NO + 1문장 근거 — 해당 장르 체크리스트 항목 7 (있으면)"
-    }},
-    "weak_zones": ["장르 기대가 약할 것으로 예상되는 비트 구간 명시 (예: '클라이맥스가 로맨스 완성 아님', '2막 Fun and Games 부족')"],
-    "climax_verdict": "CLIMAX_PASS 또는 CLIMAX_FAIL — 장르 약속에 맞는 클라이맥스인가. FAIL이면 3막 전체 재설계 강제"
-  }},
-  "opening_strategy": {{
-    "opening_type": "Action Drop / Cold Open / Tease & Reveal / In Media Res / Character Reveal Action / Hook Dialogue 중 택1 — 시스템 프롬프트의 오프닝 DNA 매핑에 따른 권장 기법을 우선하되, 작품 특성에 맞게 택1",
-    "opening_intent": "이 오프닝으로 무엇을 잡는가 — 캐릭터 / 세계 / 사건 / 톤 / 테마 중 1~2개 구체화",
-    "dopamine_point": "첫 3분 안에 관객이 느낄 구체적 감각 — 충격 / 웃음 / 긴장 / 경이 / 호기심 / 감정 울림 중 1개 선택 + 어떤 방식으로 터뜨리는가 1문장",
-    "opening_to_act1_link": "오프닝과 1막 본편의 연결 논리 — 동일 시점 진입 / 플래시백 회수 / 톤 브리지 / 병렬 구조 중 어떤 방식인가 1문장",
-    "opening_hook_line": "오프닝의 기억에 남을 한 줄 대사 또는 한 이미지 — 실제 시나리오에 쓸 수 있는 수준으로 구체적으로",
-    "genre_dna_check": "이 오프닝이 장르 DNA 자가검증 질문에 어떻게 대답하는가 — 예) 호러면 '첫 3분 안에 공포의 규칙/흔적이 심어졌는가?'에 어떻게 YES인가 1문장"
-  }},
-  "world_build": {{
-    "time": "시간 배경",
-    "space": "공간 배경",
-    "rules": "세계관 규칙 1문장",
-    "taboo": "금기 1문장",
-    "power_structure": "권력 구조 1문장",
-    "visual_keywords": ["시각 이미지 키워드 3~5개"],
-    "conflict_points": ["세계관 충돌 포인트 3개"]
-  }},
-  "characters": [
-    {{
-      "role": "protagonist",
-      "name": "",
-      "description": "인물 소개 1문장",
-      "goal": "이 인물의 욕망 1문장",
-      "need": "결핍 1문장",
-      "strategy": "행동 방식 1문장",
-      "flaw": "결점 1문장",
-      "arc": "변화 1문장",
-      "dialogue_tone": "대사 톤 키워드"
-    }},
-    {{
-      "role": "antagonist",
-      "name": "",
-      "description": "",
-      "goal": "",
-      "need": "",
-      "strategy": "",
-      "flaw": "",
-      "arc": "",
-      "dialogue_tone": ""
-    }},
-    {{
-      "role": "ally",
-      "name": "",
-      "description": "",
-      "goal": "",
-      "flaw": "",
-      "dialogue_tone": ""
-    }},
-    {{
-      "role": "mirror",
-      "name": "",
-      "description": "",
-      "goal": "",
-      "flaw": "",
-      "dialogue_tone": ""
-    }}
-  ],
-  "extended_characters": [
-    {{
-      "role": "역할명 (catalyst/subplot_lead/mentor/rival/informant/love_interest 등 자유)",
-      "name": "",
-      "description": "이 인물이 이야기에 왜 필요한가 1문장",
-      "goal": "",
-      "flaw": "",
-      "dialogue_tone": ""
-    }}
-  ],
-  "relationship_map": [
-    "주인공↔적대자: 관계 1문장",
-    "주인공↔조력자: 관계 1문장",
-    "주인공↔거울: 관계 1문장",
-    "확장 캐릭터 간 핵심 관계: 1문장씩"
-  ],
-  "attraction_design": {{
-    "opening_hook": {{
-      "type": "A1(In Medias Res) / A2(충격적 사건) / A3(결함 드러남) 중 선택",
-      "description": "첫 장면 구체적 묘사 — 어떤 장면으로 시작하는가 2~3문장",
-      "forbidden_check": "설명/일상/내레이션으로 시작하지 않는다는 확인 1문장"
-    }},
-    "twist_point": {{
-      "expected_direction": "관객이 예상할 전개 1문장",
-      "betrayal": "그 예상을 깨는 배반 포인트 1문장 — 이 이야기만의 방향",
-      "why_more_true": "배반이 단순 반전이 아니라 더 진실된 방향인 이유 1문장"
-    }},
-    "water_cooler_moment": {{
-      "scene_or_setup": "관객이 다음 날 누군가에게 말하고 싶어지는 장면 또는 설정 1문장",
-      "why_memorable": "왜 기억에 남는가 1문장"
-    }},
-    "korean_specificity": [
-      "이 이야기의 한국적 구체성 — 추상어 금지, 공간/제도/관계로 표현 (3개)"
-    ],
-    "villain_logic": "빌런이 자신만의 논리 안에서 옳다고 믿는 이유 1문장",
-    "emotional_explosion": {{
-      "suppression": "어떤 감정을 언제까지 억누르는가 1문장",
-      "explosion_moment": "어느 장면에서 터지는가 1문장"
-    }},
-    "forbidden_directions": [
-      "이 이야기가 절대 가면 안 되는 방향 3개 — 뻔해지는 순간들"
-    ],
-    "planting_payoff": [
-      {{
-        "type": "character / relationship / world 중 선택",
-        "plant": "1막에 심는 것 — 대사/소품/습관/장소/이미지 1문장",
-        "plant_scene": "어느 장면에서 심는가 (Beat 번호 또는 상황)",
-        "payoff": "2막 후반~3막에서 회수 — 새로운 의미로 돌아오는 순간 1문장",
-        "payoff_scene": "어느 장면에서 회수하는가 (Beat 번호 또는 상황)"
-      }}
-    ]
-  }},
-  "research_applied": {{
-    "references_used": [
-      {{
-        "source_type": "real_event / existing_work",
-        "source_id": 1,
-        "source_title": "리서치 JSON에서 참조한 아이템의 제목",
-        "applied_to": "character_background / world_rule / plot_event / motif / dialogue_reference / visual_detail 중 선택",
-        "how_applied": "이 리서치 요소를 이 작품 어디에 어떻게 녹였는가 1문장 — 추상 금지, 구체적으로",
-        "character_name": "해당 캐릭터 이름 (캐릭터에 적용된 경우, 아니면 빈 문자열)"
-      }}
-    ],
-    "verisimilitude_anchors": [
-      "핍진성 앵커 1 — Treatment·Scene·시나리오에서 반드시 유지할 현실 기반 디테일 1문장",
-      "핍진성 앵커 2",
-      "핍진성 앵커 3"
-    ],
-    "research_absorption_note": "리서치를 어떻게 소화했는지 작가 시점 1문장 — 단순 나열이 아닌 '이 작품만의 방식으로 어떻게 흡수되었는가'"
-  }}
-}}
-
-규칙:
-- logline_pack 각 버전은 관점만 다르고 같은 이야기를 가리켜야 한다.
-- attraction_design은 이 이야기의 매력 설계도다. 가장 구체적으로 작성할 것.
-- attraction_design.opening_hook.description은 실제 첫 장면을 그릴 수 있을 만큼 구체적으로.
-- attraction_design.water_cooler_moment는 오징어게임의 달고나, 기생충의 냄새처럼 누군가에게 말하고 싶어지는 것.
-- attraction_design.korean_specificity는 추상어(가난, 차별, 압박) 금지. 반드시 구체적 명사(반지하, 수능, 연습생 계약서)로.
-- attraction_design.planting_payoff는 최소 3개. type별 최소 1개씩 (character/relationship/world). Plant 없는 Payoff(데우스 엑스 마키나) 금지.
-- goal_need_strategy는 이 작품의 서사 엔진이다. 가장 정밀하게 작성할 것.
-- narrative_drive는 BLUE JEANS 고유 서사동력 프레임워크다. desire_origin이 loss인지 lack인지를 정확히 진단하라. 이것이 이야기 전체의 방향을 결정한다.
-- characters는 필수 4명(protagonist/antagonist/ally/mirror). extended_characters는 이야기가 필요로 하는 만큼 0~4명 추가 (최대 총 8명). 영화는 4~5명, 미니시리즈는 6~8명이 적정. 각 인물의 goal이 서로 달라야 한다.
-- extended_characters의 role은 자유. catalyst(촉매자), subplot_lead(서브플롯 리드), mentor(멘토), rival(라이벌), informant(정보원), love_interest(연인) 등 이야기에 맞는 역할명을 직접 지정.
-- world_build의 conflict_points는 세계관이 만들어내는 갈등이어야 한다.
-- [v2.3.8 신규] research_applied는 '이 작품에 실제로 응용된 리서치 요소만' 선별 기록. 리서치에 있었으나 이 작품에 녹지 못한 것은 제외.
-  references_used는 최소 2개, 최대 6개. 모든 항목의 how_applied는 '어디에/어떻게'가 구체적으로 드러나야 한다.
-  verisimilitude_anchors는 정확히 3~5개. Treatment·시나리오에서 Writer Engine이 반드시 유지할 핵심 디테일.
-  리서치가 제공되지 않은 경우에도 references_used는 빈 배열로 두되, verisimilitude_anchors는 작품 자체의 내적 설정 기반으로 3개 생성.
-"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=16000,
-            temperature=0.3,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-
-        if response.stop_reason == "max_tokens":
-            st.warning("⚠️ Core Build 응답 잘림. 재시도...")
-            response = client.messages.create(
-                model=ANTHROPIC_MODEL,
-                max_tokens=16000,
-                temperature=0.3,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
-            )
-
-        txt = "".join(
-            block.text for block in response.content if hasattr(block, "text")
-        ).strip()
-        st.session_state["last_core_raw"] = txt
-
-        return safe_json_loads(txt)
-
-    except Exception as e:
-        st.session_state["last_error"] = str(e)
-        st.error(f"Core Build 실패: {e}")
-        raw = st.session_state.get("last_core_raw", "")
-        if raw:
-            with st.expander("🔧 Core Build Raw Response (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-# ─── API Call: Core Gate (2단계) ───
-def call_core_gate(core_data):
-    """Core Build 2단계: Gate B (Drive) + Gate C (Character) 채점"""
-    try:
-        client = get_client()
-
-        system_prompt = P.SYSTEM_CORE_GATE
-
-        user_prompt = f"""[Core Build 결과]
-{json.dumps(core_data, ensure_ascii=False)}
-
-[JSON 스키마]
-{{
-  "gate_b_drive": {{
-    "goal_clarity": 0.0,
-    "need_from_loss": 0.0,
-    "strategy_creative": 0.0,
-    "failure_cost": 0.0,
-    "average": 0.0,
-    "feedback": "Gate B 종합 피드백 1문장"
-  }},
-  "gate_c_character": {{
-    "protagonist_antagonist_logic": 0.0,
-    "supporting_not_functional": 0.0,
-    "relationship_produces_conflict": 0.0,
-    "average": 0.0,
-    "feedback": "Gate C 종합 피드백 1문장"
-  }},
-  "five_axis_scores": {{
-    "goal": 0.0,
-    "need": 0.0,
-    "strategy": 0.0,
-    "structure": 0.0,
-    "character_concept": 0.0,
-    "final_score": 0.0,
-    "verdict": "개발 진행 | 개발 보류 | 구조 재설계"
-  }}
-}}
-
-규칙:
-- gate_b average = 4항목 평균
-- gate_c average = 3항목 평균
-- five_axis: structure는 아직 Structure Build 전이므로 goal/need/strategy 기반으로 잠정 추정
-- final_score = 0.20*goal + 0.20*need + 0.20*strategy + 0.25*structure + 0.15*character_concept
-- verdict: 8.0 이상 → 개발 진행, 6.0~7.9 → 개발 보류, 5.9 이하 → 구조 재설계
-"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=2000,
-            temperature=0.2,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-
-        txt = "".join(
-            block.text for block in response.content if hasattr(block, "text")
-        ).strip()
-        st.session_state["last_gate_raw"] = txt
-
-        return safe_json_loads(txt)
-
-    except Exception as e:
-        st.session_state["last_error"] = str(e)
-        st.error(f"Gate 채점 실패: {e}")
-        raw = st.session_state.get("last_gate_raw", "")
-        if raw:
-            with st.expander("🔧 Gate Raw Response (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-# ─── API Call: Reality Gate (v2.7.0 신규) ───
-def call_reality_gate(project, core_data):
-    """Core 직후 사실성 검문 — 제도·절차·직업 역할 위배 전제를 적출.
-
-    LOCKED는 보존 대상이지 검증 대상이 아니므로, 상류(Idea Engine)가
-    틀린 전제를 넘기면 하류 전 단계가 오염된다. 이 함수는 그 오염을
-    Core 시점에서 한 번 걸러내기 위한 검문소다.
-
-    엔진은 적출만 하고, 채택 여부는 전적으로 작가가 결정한다.
-    """
-    try:
-        client = get_client()
-
-        locked_items = project.get("locked_items", []) or []
-        locked_text = "\n".join(f"- {x}" for x in locked_items) if locked_items else "(없음)"
-
-        # 직업 감지 결과를 근거 자료로 함께 주입
-        prof_block = ""
-        try:
-            import profession_pack as PP
-            scan = " ".join(locked_items) + " " + (project.get("idea_text") or "")
-            cats = PP.detect_profession_category(scan)
-            irs = []
-            for c in cats:
-                data = PP.PROFESSION_PACK.get(c, {})
-                ir = data.get("institutional_reality")
-                if ir:
-                    irs.append(f"[{c}]\n{ir}")
-            if irs:
-                prof_block = (
-                    "\n\n[제도 사실성 참조 자료 — 감지된 직군]\n"
-                    "아래는 판정 근거로 쓸 수 있는 확정 자료다. "
-                    "여기에 없는 영역은 일반 지식으로 판단하되, 확신이 없으면 적출하지 말 것.\n\n"
-                    + "\n\n".join(irs)
-                )
-        except Exception:
-            prof_block = ""
-
-        user_prompt = f"""[작품 기본 정보]
-제목: {project.get('title', '')}
-장르: {project.get('genre', '')}
-포맷: {project.get('format', '')}
-타겟 시장: {project.get('target_market', '')}
-실화 기반: {project.get('fact_based', False)}
-시대극: {project.get('historical', False)}
-
-[아이디어 원문]
-{project.get('idea_text', '')}
-
-[LOCKED 항목 — 상류에서 확정되어 넘어온 것]
-{locked_text}
-
-[Core Build 결과]
-{json.dumps(core_data, ensure_ascii=False)}
-{prof_block}
-
-[JSON 스키마]
-{{
-  "verdict": "CLEAR | ISSUES_FOUND",
-  "scanned_domains": ["점검한 영역 1", "점검한 영역 2"],
-  "issues": [
-    {{
-      "id": "R1",
-      "severity": "CRITICAL | MAJOR | MINOR",
-      "domain": "직업 역할 | 법적 효력 | 절차·기간 | 조직·권한 | 물리적 성립",
-      "location": "LOCKED 항목 또는 Core 필드의 원문 일부 (40자 이내)",
-      "error": "무엇이 틀렸는지 1문장",
-      "reality": "실제로는 어떤지 1~2문장. 근거 조문·제도명 있으면 명시",
-      "impact": "이대로 두면 Writer Engine·촬영 단계에서 무엇이 깨지는지 1문장",
-      "alternatives": [
-        "원 설계 의도를 보존하면서 사실만 교정한 대안 1",
-        "원 설계 의도를 보존하면서 사실만 교정한 대안 2"
-      ],
-      "suggested_locked": "대안 1을 반영한 LOCKED 교체 문장 (원문과 같은 형식, 1줄)"
-    }}
-  ],
-  "author_note": "작가가 의도적으로 비튼 것으로 보이는 설정이 있으면 여기에 기록. 없으면 빈 문자열."
-}}
-
-규칙:
-- issues는 최대 5건. 심각도 높은 순 정렬.
-- 위배 사항이 없으면 issues를 빈 배열로 두고 verdict는 "CLEAR".
-- 확신이 없으면 적출하지 않는다. 오탐이 미탐보다 해롭다.
-- 흥행성·완성도·취향에 대한 의견은 절대 포함하지 않는다.
-"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=4000,
-            temperature=0.1,
-            system=P.SYSTEM_REALITY_GATE,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-
-        txt = "".join(
-            block.text for block in response.content if hasattr(block, "text")
-        ).strip()
-        st.session_state["last_reality_raw"] = txt
-
-        return safe_json_loads(txt)
-
-    except Exception as e:
-        st.session_state["last_error"] = str(e)
-        st.error(f"Reality Gate 실패: {e}")
-        raw = st.session_state.get("last_reality_raw", "")
-        if raw:
-            with st.expander("🔧 Reality Gate Raw Response (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-# ─── API Call: Character Bible ───
-def call_character_bible_single(char_data, all_chars_names, core_data, genre, fmt, locked_block="",
-                                 fact_based=False, historical=False, film_type="",
-                                 prior_chars_block=""):
-    """캐릭터 바이블 — 캐릭터 1인 단위 호출
-    
-    Args:
-        prior_chars_block: 이미 생성된 다른 캐릭터들의 일관성 사실 블록 (v2.3.1 신규).
-                          빈 문자열이면 일관성 참조 없이 생성 (첫 번째 캐릭터).
-    """
-    try:
-        client = get_client()
-        gns = core_data.get("goal_need_strategy", {})
-        nd = core_data.get("narrative_drive", {})
-        lp = core_data.get("logline_pack", {})
-        wb = core_data.get("world_build", {})
-
-        char_json = json.dumps(char_data, ensure_ascii=False)
-        gns_json = json.dumps(gns, ensure_ascii=False)
-        wb_json = json.dumps(wb, ensure_ascii=False)
-
-        role = char_data.get("role", "")
-        name = char_data.get("name", "")
-        other_names = [n for n in all_chars_names if n != name]
-        others_str = ", ".join(other_names) if other_names else "없음"
-
-        # v2.4.0: 시대극 자동 감지 컨텍스트 추출
-        _locked_text, _idea_text = _get_period_scan_context({
-            "genre": genre,
-            "core_data": core_data or {},
-            "locked_items": [locked_block] if locked_block else [],
-        })
-        system_prompt = P.build_system_char_bible(genre, fmt, others_str,
-                                                    fact_based=fact_based, historical=historical, film_type=film_type,
-                                                    locked_text=_locked_text, idea_text=_idea_text)
-
-        schema = P.CHAR_BIBLE_SCHEMA.replace("ROLE_PLACEHOLDER", role).replace("NAME_PLACEHOLDER", name)
-
-        user_prompt = f"""[확장할 캐릭터]
-{char_json}
-
-[작품 Goal/Need/Strategy]
-{gns_json}
-
-[세계관]
-{wb_json}
-
-[로그라인]
-{lp.get("washed","")}
-
-[다른 캐릭터 이름 (관계별 태도 작성용)]
-{others_str}
-{locked_block}
-{prior_chars_block}
-[JSON 스키마 — 이 캐릭터 1인분만 출력]
-{schema}
-
-{P.CHAR_BIBLE_RULES}"""
-
-        # ─── v2.5.3: 스트리밍 호출로 전환 (long requests 정책 대응) ───
-        with client.messages.stream(
-            model=ANTHROPIC_MODEL_OPUS, max_tokens=24000, temperature=0.3,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        ) as stream:
-            response = stream.get_final_message()
-        # max_tokens 잘림 시 분량 줄여서 재시도 (v2.5.1: max_tokens 24000으로 상향)
-        if response.stop_reason == "max_tokens":
-            retry_prompt = user_prompt.replace(
-                "외형·첫인상 3문장", "외형·첫인상 2문장"
-            ).replace(
-                "과거사 5문장", "과거사 3문장"
-            ).replace(
-                "1막 끝 상태 2문장", "1막 끝 상태 1문장"
-            ).replace(
-                "미드포인트 상태 2문장", "미드포인트 상태 1문장"
-            ).replace(
-                "클라이맥스 상태 2문장", "클라이맥스 상태 1문장"
-            )
-            with client.messages.stream(
-                model=ANTHROPIC_MODEL_OPUS, max_tokens=24000, temperature=0.3,
-                system=system_prompt,
-                messages=[{"role": "user", "content": retry_prompt}]
-            ) as stream:
-                response = stream.get_final_message()
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        st.session_state[f"last_char_bible_{role}_raw"] = txt
-
-        # ─── v2.5.1: JSON 파싱 시도 — 실패 시 자동 재시도 2회 ───
-        # 1차 실패 → temperature 0.15로 재시도 (소프트 강화)
-        # 2차 실패 → temperature 0.05 + JSON_OUTPUT_RULES_STRICT 주입 (하드 강화)
-        try:
-            return safe_json_loads(txt)
-        except json.JSONDecodeError:
-            st.warning(f"⚠️ {name} JSON 파싱 실패 — 1차 재시도 중 (temp 0.15)...")
-            # 1차 재시도: JSON 규칙을 더 강하게 강조 + temperature 하강
-            retry_system_1 = system_prompt + "\n\n★ 최우선 규칙: 반드시 유효한 JSON만 출력. 대사 안의 따옴표는 작은따옴표만. 줄바꿈 금지. 역슬래시 금지. 후행 쉼표 금지. 코드 펜스(```) 금지. 출력 시작은 { 끝은 }. ★"
-            with client.messages.stream(
-                model=ANTHROPIC_MODEL_OPUS, max_tokens=24000, temperature=0.15,
-                system=retry_system_1,
-                messages=[{"role": "user", "content": user_prompt}]
-            ) as stream:
-                response2 = stream.get_final_message()
-            txt2 = "".join(b.text for b in response2.content if hasattr(b, "text")).strip()
-            st.session_state[f"last_char_bible_{role}_raw"] = txt2
-
+        candidate = text[text.find("{"):text.rfind("}") + 1]
+        for _ in range(30):
             try:
-                return safe_json_loads(txt2)
-            except json.JSONDecodeError:
-                st.warning(f"⚠️ {name} 1차 재시도도 실패 — 2차 재시도 중 (temp 0.05, STRICT 룰 주입)...")
-                # 2차 재시도: temperature 최저 + JSON_OUTPUT_RULES_STRICT 추가 주입
-                retry_system_2 = system_prompt + "\n\n" + P.JSON_OUTPUT_RULES_STRICT + "\n\n★ 절대 위반 금지: 단일 JSON 객체. 코드 펜스 금지. 설명 텍스트 금지. 첫 문자는 { 마지막 문자는 }. 대사 안의 인용은 작은따옴표만. 줄바꿈·역슬래시·후행 쉼표 모두 금지. ★"
-                with client.messages.stream(
-                    model=ANTHROPIC_MODEL_OPUS, max_tokens=24000, temperature=0.05,
-                    system=retry_system_2,
-                    messages=[{"role": "user", "content": user_prompt}]
-                ) as stream:
-                    response3 = stream.get_final_message()
-                txt3 = "".join(b.text for b in response3.content if hasattr(b, "text")).strip()
-                st.session_state[f"last_char_bible_{role}_raw"] = txt3
-                return safe_json_loads(txt3)
-
-    except Exception as e:
-        st.error(f"Character Bible ({name}) 생성 실패: {e}")
-        raw = st.session_state.get(f"last_char_bible_{role}_raw", "")
-        if raw:
-            with st.expander(f"🔧 {name} Raw (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-def call_character_bible(core_data, genre, fmt, locked_block="",
-                         fact_based=False, historical=False, film_type=""):
-    """캐릭터 바이블 — characters + extended_characters 모두 처리
-    
-    v2.3.1: 순차 생성 시 이전 캐릭터의 핵심 사실을 다음 캐릭터 생성 프롬프트에 주입하여
-            가족 관계·학력·나이 등의 일관성 모순을 차단한다.
-    """
-    chars = core_data.get("characters", [])
-    ext_chars = core_data.get("extended_characters", [])
-    all_chars = chars + ext_chars
-    all_names = [c.get("name", f"캐릭터{i+1}") for i, c in enumerate(all_chars)]
-
-    result_chars = []
-    prior_facts = []  # v2.3.1: 이전 캐릭터들의 일관성 사실 누적
-
-    for i, ch in enumerate(all_chars):
-        name = ch.get("name", f"캐릭터{i+1}")
-        role = ch.get("role", "")
-
-        # v2.3.1: 이전 캐릭터 맥락 블록 생성
-        prior_chars_block = P.build_prior_chars_consistency_block(prior_facts)
-
-        if i == 0:
-            st.info(f"📖 {i+1}/{len(all_chars)} — {name} ({role}) 바이블 생성 중... (최초 캐릭터)")
-        else:
-            st.info(f"📖 {i+1}/{len(all_chars)} — {name} ({role}) 바이블 생성 중... "
-                    f"(이전 {len(prior_facts)}명과 일관성 검증 중)")
-
-        char_result = call_character_bible_single(
-            ch, all_names, core_data, genre, fmt,
-            locked_block=locked_block,
-            fact_based=fact_based, historical=historical, film_type=film_type,
-            prior_chars_block=prior_chars_block,  # v2.3.1 신규
-        )
-
-        if char_result:
-            result_chars.append(char_result)
-            # v2.3.1: 성공한 캐릭터의 일관성 사실을 추출하여 다음 캐릭터 생성 시 참조
-            facts = P.extract_char_consistency_facts(char_result)
-            prior_facts.append(facts)
-        else:
-            st.warning(f"⚠️ {name} 바이블 생성 실패. 건너뜁니다.")
-
-    if result_chars:
-        return {"characters": result_chars}
-    return None
-
-
-# ─── API Call: Structure Build Story (1단계) ───
-def call_structure_story(core_data, genre, market, fmt, locked_block="",
-                          fact_based=False, historical=False, film_type=""):
-    """Structure 1단계: Synopsis 1P + Storyline"""
-    try:
-        client = get_client()
-        gns = core_data.get("goal_need_strategy", {})
-        nd = core_data.get("narrative_drive", {})
-        lp = core_data.get("logline_pack", {})
-        chars = core_data.get("characters", []) + core_data.get("extended_characters", [])
-
-        # v2.4.0: 시대극 자동 감지 컨텍스트 추출
-        _locked_text, _idea_text = _get_period_scan_context({
-            "genre": genre,
-            "core_data": core_data or {},
-            "locked_items": [locked_block] if locked_block else [],
-        })
-        system_prompt = P.build_system_structure_story(
-            fact_based=fact_based, historical=historical, film_type=film_type,
-            locked_text=_locked_text, idea_text=_idea_text,
-        )
-
-        user_prompt = f"""[Core Build 요약]
-로그라인: {lp.get("washed", lp.get("original", ""))}
-장르: {genre} / 타겟: {market} / 포맷: {fmt}
-{locked_block}
-Goal: {gns.get("goal","")}
-Need: {gns.get("need","")}
-Strategy: {gns.get("strategy","")}
-캐릭터: {json.dumps(chars, ensure_ascii=False)}
-
-[JSON 스키마]
-{{
-  "synopsis_1p": {{
-    "opening": "시작 상황",
-    "catalyst": "촉발 사건",
-    "development": "전개",
-    "midpoint": "미드포인트 전환",
-    "collapse": "붕괴/위기",
-    "climax": "결전",
-    "ending": "결말"
-  }},
-  "storyline": [
-    {{
-      "seq": 1,
-      "label": "시퀀스 라벨 (동사→동사 형식)",
-      "pages": "p.1~15",
-      "summary": "이 구간 전개 요약",
-      "conflict": "이 구간의 갈등",
-      "emotion": "감정선 키워드",
-      "hook": "다음 구간으로 당기는 힘"
-    }}
-  ]
-}}
-
-규칙:
-- synopsis_1p 각 항목 2문장 이내
-- storyline은 8개 시퀀스 (영화 기준)
-- 시리즈면 시퀀스 대신 에피소드 단위 6~8개
-- 각 시퀀스의 summary, conflict, hook 1문장씩
-"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL, max_tokens=16000, temperature=0.3,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-        if response.stop_reason == "max_tokens":
-            response = client.messages.create(
-                model=ANTHROPIC_MODEL, max_tokens=16000, temperature=0.3,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
-            )
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        st.session_state["last_structure_story_raw"] = txt
-        return safe_json_loads(txt)
-    except Exception as e:
-        st.error(f"Story 생성 실패: {e}")
-        raw = st.session_state.get("last_structure_story_raw", "")
-        if raw:
-            with st.expander("🔧 Story Raw (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-# ─── API Call: Structure Build Diagnosis + Character Arcs (2단계) ───
-def call_structure_diagnosis(core_data, story_data, genre, fmt, locked_block="",
-                              fact_based=False, historical=False, film_type=""):
-    """Structure 2단계: 3막 구조 진단 + 15비트 + 캐릭터 관계 변화표"""
-    try:
-        client = get_client()
-        gns = core_data.get("goal_need_strategy", {})
-        nd = core_data.get("narrative_drive", {})
-        chars = core_data.get("characters", []) + core_data.get("extended_characters", [])
-
-        # v2.4.0: 시대극 자동 감지 컨텍스트 추출
-        _locked_text, _idea_text = _get_period_scan_context({
-            "genre": genre,
-            "core_data": core_data or {},
-            "locked_items": [locked_block] if locked_block else [],
-        })
-        system_prompt = P.build_system_structure_diagnosis(
-            fact_based=fact_based, historical=historical, film_type=film_type,
-            locked_text=_locked_text, idea_text=_idea_text,
-        )
-
-        user_prompt = f"""[입력]
-장르: {genre} / 포맷: {fmt}
-{locked_block}
-Goal: {gns.get("goal","")} / Need: {gns.get("need","")} / Strategy: {gns.get("strategy","")}
-서사동력: {nd.get("desire_origin","")}({nd.get("origin_detail","")}) → {nd.get("arc_direction","")} / 해결전략: {nd.get("resolution_strategy","")}
-
-[캐릭터]
-{json.dumps(chars, ensure_ascii=False)}
-
-[시놉시스]
-{json.dumps(story_data.get("synopsis_1p", {}), ensure_ascii=False)}
-
-[스토리라인]
-{json.dumps(story_data.get("storyline", []), ensure_ascii=False)}
-
-[JSON 스키마]
-{{
-  "three_act": {{
-    "act1_end": "1막 끝 전환점",
-    "act2_midpoint": "미드포인트",
-    "act2_end": "2막 끝 전환점 (All Is Lost)",
-    "act3_climax": "클라이맥스",
-    "diagnosis": "3막 구조 종합 진단 1문장"
-  }},
-  "beat_sheet": [
-    {{
-      "beat": "Opening Image",
-      "status": "있음|약함|없음",
-      "note": "근거 1문장"
-    }}
-  ],
-  "character_arcs": [
-    {{
-      "name": "캐릭터 이름",
-      "role": "protagonist|antagonist|ally|mirror|catalyst|subplot_lead",
-      "act1_state": "1막에서의 상태/태도 1문장",
-      "turning_point": "변화를 촉발하는 사건 1문장",
-      "act3_state": "3막에서의 변화된 상태 1문장",
-      "arc_type": "성장|몰락|각성|반전|정체"
-    }}
-  ],
-  "relationship_changes": [
-    {{
-      "pair": "캐릭터A ↔ 캐릭터B",
-      "act1": "1막 관계 상태",
-      "midpoint": "미드포인트 관계 전환",
-      "act3": "3막 관계 도착점"
-    }}
-  ]
-}}
-
-규칙:
-- beat_sheet는 15비트 전체 (Opening Image ~ Final Image)
-- beat status는 반드시 있음/약함/없음 중 하나
-- character_arcs는 Core Build의 캐릭터 전원
-- relationship_changes는 핵심 관계 3~4쌍
-- 모든 필드 1문장 이내로 압축
-"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL, max_tokens=16000, temperature=0.25,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-        if response.stop_reason == "max_tokens":
-            response = client.messages.create(
-                model=ANTHROPIC_MODEL, max_tokens=16000, temperature=0.25,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
-            )
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        st.session_state["last_structure_diag_raw"] = txt
-        return safe_json_loads(txt)
-    except Exception as e:
-        st.error(f"구조 진단 실패: {e}")
-        raw = st.session_state.get("last_structure_diag_raw", "")
-        if raw:
-            with st.expander("🔧 Diagnosis Raw (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-# ─── API Call: Structure Gate D (3단계) ───
-def call_structure_gate(story_data, diag_data):
-    """Structure 3단계: Gate D 채점"""
-    try:
-        client = get_client()
-        system_prompt = P.SYSTEM_STRUCTURE_GATE
-
-        user_prompt = f"""[시놉시스]
-{json.dumps(story_data.get("synopsis_1p",{}), ensure_ascii=False)}
-
-[3막 구조]
-{json.dumps(diag_data.get("three_act",{}), ensure_ascii=False)}
-
-[15비트]
-{json.dumps(diag_data.get("beat_sheet",[]), ensure_ascii=False)}
-
-[JSON 스키마]
-{{
-  "gate_d_structure": {{
-    "turning_points_valid": 0.0,
-    "midpoint_redirects": 0.0,
-    "all_is_lost_works": 0.0,
-    "ending_inevitable_surprising": 0.0,
-    "average": 0.0,
-    "feedback": "Gate D 종합 피드백 1문장"
-  }}
-}}
-규칙: average = 4항목 평균."""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL, max_tokens=1500, temperature=0.2,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        st.session_state["last_structure_gate_raw"] = txt
-        return safe_json_loads(txt)
-    except Exception as e:
-        st.error(f"Gate D 실패: {e}")
-        return None
-
-
-# ─── API Call: 기승전결 1pg 줄글 ───
-def call_structure_prose(core_data, story_data):
-    """기승전결 구조의 1페이지 줄글 시놉시스"""
-    try:
-        client = get_client()
-        lp = core_data.get("logline_pack", {})
-        gns = core_data.get("goal_need_strategy", {})
-        nd = core_data.get("narrative_drive", {})
-        syn = story_data.get("synopsis_1p", {})
-        storyline = story_data.get("storyline", [])
-
-        user_prompt = f"""[작품 정보]
-로그라인: {lp.get("washed", lp.get("original",""))}
-Goal: {gns.get("goal","")} / Need: {gns.get("need","")} / Strategy: {gns.get("strategy","")}
-서사동력: {nd.get("desire_origin","")}({nd.get("origin_detail","")}) → {nd.get("arc_direction","")} / 해결전략: {nd.get("resolution_strategy","")}
-
-[시놉시스]
-{json.dumps(syn, ensure_ascii=False)}
-
-[스토리라인]
-{json.dumps(storyline, ensure_ascii=False)}
-
-[요청]
-위 정보를 기반으로 기-승-전-결 구조의 1페이지 분량 줄글 시놉시스를 작성하라.
-
-규칙:
-- 기(起): 상황 설정과 주인공 소개
-- 승(承): 사건 전개와 갈등 심화
-- 전(轉): 반전과 위기
-- 결(結): 해결과 마무리
-- 전체 500~700자 분량
-- 줄글로 작성. 번호나 구분 기호 없이 자연스러운 서술체.
-- 한국어로 작성.
-- JSON 형식: {{"prose": "줄글 텍스트"}}
-- JSON만 출력. JSON 외 텍스트 금지."""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL, max_tokens=2000, temperature=0.3,
-            system=P.SYSTEM_STRUCTURE_PROSE,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        return safe_json_loads(txt)
-    except Exception as e:
-        st.error(f"줄글 시놉시스 생성 실패: {e}")
-        return None
-
-
-# ─── API Call: Scene Design (장면화) ───
-def call_scene_design(core_data, story_data, diag_data, genre, fmt, locked_block="",
-                      fact_based=False, historical=False, film_type=""):
-    """Scene Design: 핵심 장면 15~18개 설계 (Show, don't tell)"""
-    try:
-        client = get_client()
-        gns = core_data.get("goal_need_strategy", {})
-        nd = core_data.get("narrative_drive", {})
-        lp = core_data.get("logline_pack", {})
-        chars = core_data.get("characters", []) + core_data.get("extended_characters", [])
-        storyline = story_data.get("storyline", [])
-
-        # v2.4.0: 시대극 자동 감지 컨텍스트 추출
-        _locked_text, _idea_text = _get_period_scan_context({
-            "genre": genre,
-            "core_data": core_data or {},
-            "locked_items": [locked_block] if locked_block else [],
-        })
-        system_prompt = P.build_system_scene_design(
-            genre, fact_based=fact_based, historical=historical, film_type=film_type,
-            locked_text=_locked_text, idea_text=_idea_text,
-        )
-
-        chars_simple = json.dumps(
-            [{"name": c.get("name",""), "role": c.get("role","")} for c in chars],
-            ensure_ascii=False
-        )
-        storyline_json = json.dumps(storyline, ensure_ascii=False)
-
-        # ── 매력 설계도 추출 ──
-        ad = core_data.get("attraction_design", {})
-        scene_attraction_block = ""
-        if ad:
-            oh = ad.get("opening_hook", {})
-            tp = ad.get("twist_point", {})
-            wc = ad.get("water_cooler_moment", {})
-            ee = ad.get("emotional_explosion", {})
-            fd = ad.get("forbidden_directions", [])
-            scene_attraction_block = f"""
-[⚡ 매력 설계도 — 장면 설계 최우선 명령]
-첫 장면 유형: {oh.get("type", "")}
-첫 장면 (scene_no 1 반드시 이것으로): {oh.get("description", "")}
-배반 포인트: {tp.get("betrayal", "")}
-Water Cooler Moment (반드시 key_scenes 안에 포함): {wc.get("scene_or_setup", "")}
-감정 폭발 장면: {ee.get("explosion_moment", "")}
-절대 금지 방향: {" / ".join(fd)}
-"""
-
-        # ── 오프닝 전략 추출 (v2.2 신규) ──
-        os_data = core_data.get("opening_strategy", {})
-        opening_strategy_block = ""
-        if os_data:
-            opening_strategy_block = f"""
-[🎬 오프닝 전략 — S#1 절대 명령 (v2.2)]
-오프닝 타입: {os_data.get("opening_type", "")}
-오프닝 의도: {os_data.get("opening_intent", "")}
-도파민 포인트: {os_data.get("dopamine_point", "")}
-1막 연결 방식: {os_data.get("opening_to_act1_link", "")}
-훅 라인/이미지: {os_data.get("opening_hook_line", "")}
-장르 DNA 체크: {os_data.get("genre_dna_check", "")}
-
-★ S#1(scene_no 1)은 반드시 위 '오프닝 타입'에 부합하는 장면이어야 한다. ★
-★ S#1의 dramatic_action, visual_direction, key_line에 '훅 라인/이미지'가 구체적으로 드러나야 한다. ★
-★ S#1의 emotional_beat는 '도파민 포인트'에 명시된 감각(충격/웃음/긴장/경이/호기심/감정 울림)을 만드는 방향이어야 한다. ★
-★ S#1을 '평범한 일상 소개' '풍경 묘사 후 인물 줌인' '주인공 배경 설명'으로 열면 실패다. 첫 장면에서 장르 DNA가 선언되어야 한다. ★
-"""
-
-        # ── BJND 씬 레벨 집행 블록 (v2.3 신규) — Strategy/Cost를 씬에 강제 반영 ──
-        bjnd_scene_block = P.build_bjnd_scene_block(core_data)
-
-        user_prompt = f"""[Core]
-로그라인: {lp.get("washed","")}
-Goal: {gns.get("goal","")} / Need: {gns.get("need","")} / Strategy: {gns.get("strategy","")}
-서사동력: {nd.get("desire_origin","")}({nd.get("origin_detail","")}) → {nd.get("arc_direction","")} / 해결전략: {nd.get("resolution_strategy","")}
-캐릭터: {chars_simple}
-{scene_attraction_block}
-{opening_strategy_block}
-{bjnd_scene_block}
-{locked_block}
-[Storyline]
-{storyline_json}
-
-[JSON 스키마]
-{P.SCENE_DESIGN_SCHEMA}
-
-{P.SCENE_DESIGN_RULES}
-"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL, max_tokens=16000, temperature=0.3,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-        if response.stop_reason == "max_tokens":
-            retry = user_prompt.replace("15~18개", "12~15개")
-            response = client.messages.create(
-                model=ANTHROPIC_MODEL, max_tokens=16000, temperature=0.3,
-                system=system_prompt,
-                messages=[{"role": "user", "content": retry}]
-            )
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        st.session_state["last_scene_design_raw"] = txt
-        return safe_json_loads(txt)
-    except Exception as e:
-        st.error(f"Scene Design 실패: {e}")
-        raw = st.session_state.get("last_scene_design_raw", "")
-        if raw:
-            with st.expander("🔧 Scene Design Raw (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-# ─── 16비트 구조 정의 ───
-def _get_series_act_mapping(fmt):
-    """미니시리즈의 에피소드를 3막에 매핑"""
-    bs = P.get_beat_structure(fmt)
-    eps = list(bs.keys())
-    n = len(eps)
-    if n <= 3:
-        return {1: eps[:1], 2: eps[1:2], 3: eps[2:]}
-    elif n <= 6:
-        return {1: eps[:2], 2: eps[2:4], 3: eps[4:]}
-    else:  # 8화
-        return {1: eps[:3], 2: eps[3:6], 3: eps[6:]}
-
-
-def _build_b_story_context(core_data):
-    """Core Build의 세계관/GNS에서 B-Story 컨텍스트 추출"""
-    wb = core_data.get("world_build", {})
-    gns = core_data.get("goal_need_strategy", {})
-    parts = []
-    # 시간축
-    time_ctx = wb.get("time", wb.get("시간", ""))
-    if time_ctx:
-        parts.append(f"B-Story 시간축: {time_ctx}")
-    # 공간/사회
-    space_ctx = wb.get("space", wb.get("공간", ""))
-    if space_ctx:
-        parts.append(f"B-Story 공간: {space_ctx}")
-    # 권력구조
-    power_ctx = wb.get("power_structure", wb.get("권력구조", ""))
-    if power_ctx:
-        parts.append(f"권력구조: {power_ctx}")
-    # Risk (실패 시 B-Story 영향)
-    risk = gns.get("risk", "")
-    if risk:
-        parts.append(f"실패 시 B-Story 결과: {risk}")
-    return "\n".join(parts) if parts else ""
-
-
-# ─── API Call: Treatment Build (16비트 줄글) ───
-def call_treatment_beats(core_data, story_data, scene_data, genre, fmt, act_number, locked_block="",
-                          fact_based=False, historical=False, film_type="", research=None):
-    """Treatment Build: 막별 비트 줄글 생성 — 영화/시리즈 자동 분기.
-    
-    [v2.3.8 추가 전파 필드]
-    Core Build에서 설계했지만 Treatment에서 휘발되던 4개 카테고리를 전파:
-      1. project_intent (theme + pitch + tone_manner) — 주제·톤 일관성 유지
-      2. world_build (time/space/rules) — 시대 고증·세계관 일관성 (생성 단계)
-      3. genre_expectation_check.weak_zones — Core Build 자가 진단 경고
-      4. research.real_events (상위 3~5개) + existing_works (표절 방지) — 핍진성
-    """
-    try:
-        client = get_client()
-        gns = core_data.get("goal_need_strategy", {})
-        nd = core_data.get("narrative_drive", {})
-        lp = core_data.get("logline_pack", {})
-        chars = core_data.get("characters", []) + core_data.get("extended_characters", [])
-        syn = story_data.get("synopsis_1p", {})
-        storyline = story_data.get("storyline", [])
-        
-        # v2.3.8 신규 — 휘발되던 필드 4종 추출
-        project_intent = core_data.get("project_intent", {})
-        world_build = core_data.get("world_build", {})
-        genre_check = core_data.get("genre_expectation_check", {})
-
-        is_series = P.is_series_format(fmt)
-
-        # ── 비트 목록 구성 ──
-        if is_series:
-            act_ep_map = _get_series_act_mapping(fmt)
-            bs = P.get_beat_structure(fmt)
-            all_beats = []
-            for ep_key in act_ep_map.get(act_number, []):
-                for beat_tuple in bs.get(ep_key, []):
-                    all_beats.append((beat_tuple[0], f"[{ep_key}] {beat_tuple[1]}", beat_tuple[2] if len(beat_tuple) > 2 else ""))
-            beats = all_beats
-        else:
-            bs = P.BEAT_STRUCTURE_FILM
-            beats = bs[act_number]
-
-        act_labels = {1: "1막", 2: "2막", 3: "3막"}
-        act_label = act_labels[act_number]
-
-        chars_simple = json.dumps(
-            [{"name": c.get("name",""), "role": c.get("role",""), "goal": c.get("goal",""), "flaw": c.get("flaw","")} for c in chars],
-            ensure_ascii=False
-        )
-
-        scene_ref = ""
-        if scene_data:
-            scenes = scene_data.get("key_scenes", [])
-            if scenes:
-                scene_ref = f"\n[Scene Design 참고]\n{json.dumps(scenes, ensure_ascii=False)}"
-
-        beat_list = "\n".join([f"Beat {b[0]}. {b[1]}" + (f" — {b[2]}" if len(b) > 2 and b[2] else "") for b in beats])
-
-        # ── B-Story 컨텍스트 구성 ──
-        b_story_context = _build_b_story_context(core_data)
-
-        # ── 매력 설계도 추출 ──
-        attraction_design = core_data.get("attraction_design", {})
-        attraction_block = ""
-        if attraction_design:
-            oh = attraction_design.get("opening_hook", {})
-            tp = attraction_design.get("twist_point", {})
-            wc = attraction_design.get("water_cooler_moment", {})
-            ee = attraction_design.get("emotional_explosion", {})
-            fd = attraction_design.get("forbidden_directions", [])
-            attraction_block = f"""
-[⚡ 매력 설계도 — 최우선 명령. 반드시 반영하라]
-첫 장면 유형: {oh.get("type", "")}
-첫 장면: {oh.get("description", "")}
-배반 포인트: {tp.get("betrayal", "")} (관객 예상: {tp.get("expected_direction", "")})
-Water Cooler Moment: {wc.get("scene_or_setup", "")}
-감정 억압 → 폭발: {ee.get("suppression", "")} → {ee.get("explosion_moment", "")}
-절대 금지 방향: {" / ".join(fd)}
-"""
-
-        # ── 오프닝 전략 블록 (v2.2 신규) — 1막일 때만 Beat 1 강제 규칙 적용 ──
-        os_data = core_data.get("opening_strategy", {})
-        opening_strategy_block = ""
-        if os_data and act_number == 1:
-            opening_strategy_block = f"""
-[🎬 오프닝 전략 — Beat 1 절대 명령 (v2.2)]
-오프닝 타입: {os_data.get("opening_type", "")}
-오프닝 의도: {os_data.get("opening_intent", "")}
-도파민 포인트: {os_data.get("dopamine_point", "")}
-1막 연결 방식: {os_data.get("opening_to_act1_link", "")}
-훅 라인/이미지: {os_data.get("opening_hook_line", "")}
-장르 DNA 체크: {os_data.get("genre_dna_check", "")}
-
-★ Beat 1 (1막 첫 비트) 작성 규칙 — 절대 지킬 것 ★
-1. 비트의 첫 3줄 안에 오프닝 타입에 해당하는 장면이 즉시 시작되어야 한다.
-   - Action Drop: 이미 진행 중인 행동으로 시작
-   - Cold Open: 본편과 다른 시점/장면으로 시작
-   - Tease & Reveal: 수수께끼 이미지로 시작
-   - In Media Res: 미래의 결정적 순간으로 시작
-   - Character Reveal Action: 주인공의 정의적 행동으로 시작
-   - Hook Dialogue: 강렬한 한 줄 대사로 시작
-2. '훅 라인/이미지'는 Beat 1 narrative에 구체적으로 실제 장면으로 등장해야 한다.
-3. '도파민 포인트'에 명시된 감각(충격/웃음/긴장/경이/호기심/감정 울림)이 Beat 1 안에서 최소 1회 터져야 한다.
-4. 절대 금지 AI 오프닝 습관:
-   ❌ '서울. 2024년 봄.' 같은 배경 설명 시작
-   ❌ '어느 날 아침, 주인공은 눈을 떴다.' 일상 시작
-   ❌ '오늘도 ○○은 평소처럼...' 관습 서술
-   ❌ 주인공의 외형·직업·가족관계를 첫 3줄에 나열
-   ❌ 풍경 묘사로 시작해서 인물로 줌인하는 구조
-5. Beat 1의 마지막 문장은 Beat 2로 넘어가는 연결 장치가 되어야 한다(오프닝→1막 연결 방식 준수).
-"""
-
-        # ── 시스템 프롬프트 (fmt + b_story 전달) ──
-        # v2.4.0: 시대극 자동 감지 컨텍스트 추출
-        _locked_text, _idea_text = _get_period_scan_context({
-            "genre": genre,
-            "core_data": core_data or {},
-            "locked_items": [locked_block] if locked_block else [],
-        })
-        system_prompt = P.build_system_treatment(genre, act_label, fmt=fmt, b_story_context=b_story_context,
-                                                   fact_based=fact_based, historical=historical, film_type=film_type,
-                                                   locked_text=_locked_text, idea_text=_idea_text)
-
-        # ── 시리즈용 추가 정보 ──
-        series_info = ""
-        if is_series:
-            ep_list = act_ep_map.get(act_number, [])
-            series_info = f"\n[에피소드 구성] 이 {act_label}은 {', '.join(ep_list)}에 해당합니다. 각 에피소드의 마지막 비트는 반드시 클리프행어로 끝내세요.\n"
-
-        # ── BJND 씬 레벨 집행 블록 (v2.3 신규) — 모든 막에 주입 (막별 Cost 단계 규칙 내장) ──
-        bjnd_scene_block = P.build_bjnd_scene_block(core_data)
-
-        # ─────────────────────────────────────────────
-        # v2.3.8 신규 전파 블록 4종 — Core Build에서 휘발되던 필드 주입
-        # ─────────────────────────────────────────────
-        
-        # [1] 기획의도 + 주제 + 톤앤매너 (project_intent 전파)
-        project_intent_block = ""
-        if project_intent:
-            theme = project_intent.get("theme", "")
-            pitch = project_intent.get("pitch", "")
-            tone_manner = project_intent.get("tone_manner", [])
-            if theme or pitch or tone_manner:
-                tone_str = " / ".join(tone_manner) if tone_manner else ""
-                project_intent_block = f"""
-[🎯 기획의도 — 모든 비트가 수렴해야 할 주제]
-주제: {theme}
-엘리베이터 피치: {pitch}
-톤앤매너: {tone_str}
-
-★ 매 비트 작성 시 이 주제에서 이탈하지 말 것. 대사·행동·디테일 모두 주제를 향해 수렴.
-★ 톤앤매너 키워드를 씬 분위기·대사 결·디테일 선택에 일관되게 반영.
-"""
-        
-        # [2] 세계관 (world_build 전파) — 시대/공간/규칙
-        world_build_block = ""
-        if world_build:
-            wb_time = world_build.get("time", "")
-            wb_space = world_build.get("space", "")
-            wb_rules = world_build.get("rules", "")
-            wb_taboo = world_build.get("taboo", "")
-            wb_visual = world_build.get("visual_keywords", [])
-            if any([wb_time, wb_space, wb_rules]):
-                visual_str = " / ".join(wb_visual) if wb_visual else ""
-                world_build_block = f"""
-[🌍 세계관 — 시대·공간·규칙 절대 준수]
-시간 배경: {wb_time}
-공간 배경: {wb_space}
-세계관 규칙: {wb_rules}
-금기/터부: {wb_taboo}
-시각 키워드: {visual_str}
-
-★ 위 시간 배경에 존재하지 않는 기술·제도·문화·언어를 Treatment에 포함하지 말 것.
-  (예: 1980년대 설정인데 스마트폰·SNS·AI, 조선시대인데 사진·기차 등)
-★ 세계관 규칙은 비트 전체에 일관되게 적용.
-★ 금기가 있다면 그것이 파괴되는 순간이 긴장의 축이 되어야 함.
-"""
-        
-        # [3] 장르 자가 진단 경고 (genre_expectation_check.weak_zones 전파)
-        genre_warning_block = ""
-        if genre_check:
-            weak_zones = genre_check.get("weak_zones", [])
-            climax_verdict = genre_check.get("climax_verdict", "")
-            genre_diag = genre_check.get("genre_fun_diagnosis", "")
-            if weak_zones or climax_verdict == "CLIMAX_FAIL":
-                weak_str = "\n".join(f"  · {w}" for w in weak_zones) if weak_zones else "  · (없음)"
-                genre_warning_block = f"""
-[⚠️ 장르 자가 진단 경고 — Core Build에서 식별된 약점]
-장르 재미 진단: {genre_diag}
-예상 약점 구간:
-{weak_str}
-클라이맥스 판정: {climax_verdict}
-
-★ 위 약점 구간은 Core Build가 스스로 식별한 위험 영역. Treatment 집필 시 이 구간을 특히 강하게 설계하라.
-★ CLIMAX_FAIL 판정이 있으면 3막 마지막 비트를 장르 약속에 맞게 재설계하라.
-  (예: 로맨틱 코미디 CLIMAX_FAIL이면 → 부녀 화해/가족 서사 금지, 반드시 로맨스 완성 씬)
-"""
-        
-        # [4] v2.3.8 재설계 — research_applied (Core Build 선별) 우선 + 원본 research 보조
-        # Mr. MOON 원칙: "리서치 내용 전체를 받을 필요는 없고. 설정된 캐릭터에 사용할 수 있는 것만 응용"
-        research_block_treatment = ""
-        
-        # (A) Core Build가 이미 선별한 research_applied를 최우선으로 전달
-        research_applied = core_data.get("research_applied", {}) if core_data else {}
-        if research_applied:
-            refs = research_applied.get("references_used", [])
-            anchors = research_applied.get("verisimilitude_anchors", [])
-            absorption = research_applied.get("research_absorption_note", "")
-            
-            # references_used를 간결하게 포맷
-            refs_lines = []
-            for r in refs[:6]:
-                src_title = r.get("source_title", "")
-                applied_to = r.get("applied_to", "")
-                how = r.get("how_applied", "")
-                char_name = r.get("character_name", "")
-                char_suffix = f" [→ {char_name}]" if char_name else ""
-                refs_lines.append(f"  · [{applied_to}] {src_title}: {how}{char_suffix}")
-            refs_str = "\n".join(refs_lines) if refs_lines else "  · (Core Build에서 선별한 참조 없음)"
-            
-            anchors_lines = [f"  {i+1}. {a}" for i, a in enumerate(anchors[:5])]
-            anchors_str = "\n".join(anchors_lines) if anchors_lines else "  (없음)"
-            
-            if refs_lines or anchors_lines or absorption:
-                research_block_treatment = f"""
-[📚 리서치 선별 응용 — Core Build가 이미 이 작품에 녹인 것만 전달]
-작가 흡수 노트: {absorption}
-
-[이 작품에 응용된 리서치 요소 — 매 비트에서 유지]
-{refs_str}
-
-[핍진성 앵커 — Treatment 집필 시 반드시 유지할 현실 기반 디테일]
-{anchors_str}
-
-★ 위 요소들은 Core Build가 '이 작품의 캐릭터·설정·사건에 실제로 응용된 것'만 선별한 결과.
-★ 응용된 요소는 해당 캐릭터·장면에서 구체 디테일로 드러나야 한다. 추상적 언급 금지.
-★ 핍진성 앵커는 Writer Engine까지 전달될 핵심이므로 Treatment에서 휘발시키지 말 것.
-★ 리서치에 있었으나 research_applied에 없는 요소는 이 작품에 해당 안 됨 — 끌어다 쓰지 말 것.
-"""
-        
-        # (B) 원본 research는 '표절 회피 레퍼런스'로만 보조 사용 (상위 3개 existing_works만)
-        if research and not research_applied:
-            # research_applied가 없는 경우에만 원본 research 최소한 참고 (구버전 프로젝트 호환)
-            existing_works = research.get("existing_works", [])
-            existing_titles = []
-            for w in existing_works[:5]:
-                t = w.get("title", "")
-                y = w.get("year", "")
-                if t:
-                    existing_titles.append(f"{t}({y})" if y else t)
-            existing_str = ", ".join(existing_titles) if existing_titles else "(없음)"
-            
-            if existing_titles:
-                research_block_treatment = f"""
-[📚 리서치 — 표절 회피 참조]
-유사 작품: {existing_str}
-★ 위 작품들과 유사한 설정·구조·클라이맥스를 피하라. 이 작품만의 차별점을 유지.
-※ Core Build의 research_applied가 비어있어 최소 참고만 제공. 다음 재생성 시 research_applied 작성 권장.
-"""
-
-        user_prompt = f"""[작품 정보]
-로그라인: {lp.get("washed","")}
-장르: {genre} / 포맷: {fmt}
-Goal: {gns.get("goal","")} / Need: {gns.get("need","")} / Strategy: {gns.get("strategy","")}
-서사동력: {nd.get("desire_origin","")}({nd.get("origin_detail","")}) → {nd.get("arc_direction","")} / 해결전략: {nd.get("resolution_strategy","")}
-캐릭터: {chars_simple}
-{locked_block}
-{series_info}
-{project_intent_block}
-{world_build_block}
-{genre_warning_block}
-{research_block_treatment}
-{attraction_block}
-{opening_strategy_block}
-{bjnd_scene_block}
-[Synopsis]
-{json.dumps(syn, ensure_ascii=False)}
-
-[Storyline]
-{json.dumps(storyline, ensure_ascii=False)}
-{scene_ref}
-
-[{act_label} — 작성할 비트]
-{beat_list}
-
-[JSON 스키마]
-{P.TREATMENT_BEAT_SCHEMA_TEMPLATE.format(act_number=act_number)}
-
-{P.TREATMENT_BEAT_RULES_TEMPLATE.format(beat_count=len(beats))}
-"""
-
-        # ─── v2.5.4: 스트리밍 호출 전환 + 2단계 자동 재시도 ───
-        # ─── v2.6.4: max_tokens 16000 → 24000 (시리즈 6비트 출력량 대응, v2.5.1 캐릭터 바이블과 동일 조치) ───
-        with client.messages.stream(
-            model=ANTHROPIC_MODEL_OPUS, max_tokens=24000, temperature=0.4,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        ) as stream:
-            response = stream.get_final_message()
-        if response.stop_reason == "max_tokens":
-            # v2.6.4: 축소 프롬프트를 user_prompt 자체에 반영 — 이후 JSON 파싱 재시도도
-            # 축소된 프롬프트를 사용하게 함 (기존에는 재시도가 원래 긴 프롬프트로 회귀해
-            # 절단이 원인일 경우 재시도가 구조적으로 성공 불가능했음)
-            st.warning(f"⚠️ Treatment {act_label} 출력 절단(max_tokens) — 분량 축소 후 재시도 중...")
-            user_prompt = user_prompt.replace("1500~2500자", "1200~1800자")
-            with client.messages.stream(
-                model=ANTHROPIC_MODEL_OPUS, max_tokens=24000, temperature=0.4,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
-            ) as stream:
-                response = stream.get_final_message()
-            if response.stop_reason == "max_tokens":
-                st.warning(
-                    f"⚠️ Treatment {act_label} 분량 축소 후에도 출력 절단 지속 — "
-                    f"이후 파싱 실패는 JSON 문법이 아닌 출력량 초과가 원인입니다. "
-                    f"비트 수·narrative 분량 스펙 조정이 필요합니다."
-                )
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        st.session_state[f"last_treatment_act{act_number}_raw"] = txt
-
-        # JSON 파싱 시도 — 실패 시 자동 재시도 2회 (v2.5.4)
-        # 1차 실패 → temperature 0.2로 재시도 + 강화 룰 (소프트)
-        # 2차 실패 → temperature 0.05 + JSON_OUTPUT_RULES_STRICT 주입 (하드)
-        try:
-            return safe_json_loads(txt)
-        except json.JSONDecodeError:
-            st.warning(f"⚠️ Treatment {act_label} JSON 파싱 실패 — 1차 재시도 중 (temp 0.2)...")
-            # 1차 재시도: 제어 문자 금지 강조
-            retry_system_1 = system_prompt + "\n\n★ 최우선 규칙: 반드시 유효한 JSON만 출력. narrative 안에 줄바꿈(\\n) 절대 금지. 탭(\\t) 절대 금지. 캐리지리턴(\\r) 절대 금지. 대사 인용은 작은따옴표만. 후행 쉼표 금지. 코드 펜스(```) 금지. 출력 시작은 { 끝은 }. ★"
-            with client.messages.stream(
-                model=ANTHROPIC_MODEL_OPUS, max_tokens=24000, temperature=0.2,
-                system=retry_system_1,
-                messages=[{"role": "user", "content": user_prompt}]
-            ) as stream:
-                response2 = stream.get_final_message()
-            txt2 = "".join(b.text for b in response2.content if hasattr(b, "text")).strip()
-            st.session_state[f"last_treatment_act{act_number}_raw"] = txt2
-
-            try:
-                return safe_json_loads(txt2)
-            except json.JSONDecodeError:
-                st.warning(f"⚠️ Treatment {act_label} 1차 재시도도 실패 — 2차 재시도 중 (temp 0.05, STRICT 룰 주입)...")
-                # 2차 재시도: temperature 최저 + STRICT 룰 주입
-                retry_system_2 = system_prompt + "\n\n" + P.JSON_OUTPUT_RULES_STRICT + "\n\n★ 절대 위반 금지: 단일 JSON 객체. narrative 안에 줄바꿈/탭/캐리지리턴 모두 금지. 첫 문자는 { 마지막 문자는 }. 대사 안의 인용은 작은따옴표만. 후행 쉼표 금지. 코드 펜스 금지. ★"
-                with client.messages.stream(
-                    model=ANTHROPIC_MODEL_OPUS, max_tokens=24000, temperature=0.05,
-                    system=retry_system_2,
-                    messages=[{"role": "user", "content": user_prompt}]
-                ) as stream:
-                    response3 = stream.get_final_message()
-                txt3 = "".join(b.text for b in response3.content if hasattr(b, "text")).strip()
-                st.session_state[f"last_treatment_act{act_number}_raw"] = txt3
-                # 마지막 시도: 제어 문자 사후 정리 후 파싱 시도 (v2.5.4 안전망)
-                try:
-                    return safe_json_loads(txt3)
-                except json.JSONDecodeError:
-                    # 제어 문자 사후 정리 — 마지막 안전망
-                    import re
-                    # JSON 문자열 안의 제어 문자(\n, \r, \t)를 공백으로 치환
-                    # 단, JSON 구조의 줄바꿈은 보존하기 위해 "..." 안의 것만 처리
-                    def _clean_control_chars(match):
-                        s = match.group(0)
-                        # 큰따옴표 안의 제어 문자를 공백으로 치환
-                        return re.sub(r'[\n\r\t]+', ' ', s)
-                    txt4 = re.sub(r'"(?:[^"\\]|\\.)*"', _clean_control_chars, txt3)
-                    st.session_state[f"last_treatment_act{act_number}_raw"] = txt4
-                    return safe_json_loads(txt4)
-
-    except Exception as e:
-        st.error(f"Treatment {act_label} 실패: {e}")
-        raw = st.session_state.get(f"last_treatment_act{act_number}_raw", "")
-        if raw:
-            with st.expander(f"🔧 Treatment {act_label} Raw (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
-
-
-# ═══════════════════════════════════════════════════
-# v2.6.0 — 8점 진입 사전 방지 후처리 4종
-# Treatment Build 완료 후 비트 JSON에서 신규 필드를 추출하여
-# Writer Engine v3.7.1 인계용 4블록을 자동 생성한다.
-#
-# 출력 블록:
-#   - cycle_design (시퀀스 사이클 분석)
-#   - antagonist_actions (적대자별 비트 매핑)
-#   - setup_payoff_table (회수 상태 추적)
-#   - physical_cost_plan (4단계 비트 매핑)
-#
-# 하위 호환성: 모든 함수는 .get() 기반 fallback 사용.
-# 구버전 시드(v2.5.x 이전)에 신규 필드가 없으면 빈 결과 반환.
-# ═══════════════════════════════════════════════════
-
-def _collect_all_beats(act1: dict, act2: dict, act3: dict) -> list:
-    """3개 막의 비트를 단일 리스트로 합친다 (비트 번호 순)."""
-    all_beats = []
-    for act_data in [act1, act2, act3]:
-        if act_data and isinstance(act_data, dict):
-            beats = act_data.get("beats", [])
-            if isinstance(beats, list):
-                all_beats.extend(beats)
-    # 비트 번호 기준 정렬 (안전망)
-    try:
-        all_beats.sort(key=lambda b: int(b.get("beat_no", 0)) if b.get("beat_no") not in (None, "") else 0)
+                return json.loads(candidate)
+            except json.JSONDecodeError as e:
+                pos = e.pos
+                if 0 < pos < len(candidate):
+                    candidate = candidate[:pos] + " " + candidate[pos + 1:]
+                else:
+                    break
     except Exception:
         pass
-    return all_beats
 
-
-def build_cycle_design_block(act1: dict, act2: dict, act3: dict) -> dict:
-    """v2.6.0 ① 시퀀스 사이클 사전 설계 — Beat 6~12 action_cycle 분석.
-
-    출력:
-        {
-          "beats_6_to_12": [
-            {"beat": 6, "cycle": ["저택", "봉인실", "카페", "저택"], "function": "..."},
-            ...
-          ],
-          "external_helper_meetings": [
-            {"helper": "Hendra", "location": "카페", "occurrences": [10], "form": "대면"},
-            ...
-          ],
-          "warnings": ["같은 사이클 패턴 3회 반복 감지: ...", ...]
-        }
-    """
-    all_beats = _collect_all_beats(act1, act2, act3)
-    result = {
-        "beats_6_to_12": [],
-        "external_helper_meetings": [],
-        "warnings": []
-    }
-
-    # Beat 6~12 action_cycle 수집
-    cycle_patterns = {}  # 패턴 빈도 카운트
-    for beat in all_beats:
-        try:
-            beat_no = int(beat.get("beat_no", 0))
-        except (ValueError, TypeError):
-            continue
-        if not (6 <= beat_no <= 12):
-            continue
-        cycle_str = beat.get("action_cycle", "") or ""
-        if not cycle_str:
-            continue
-        # 공간 시퀀스 파싱 (→ 또는 -> 구분자)
-        cycle_list = [s.strip() for s in cycle_str.replace("->", "→").split("→") if s.strip()]
-        result["beats_6_to_12"].append({
-            "beat": beat_no,
-            "cycle": cycle_list,
-            "function": beat.get("event_summary", "") or beat.get("beat_name", "")
-        })
-        # 패턴 빈도 카운트
-        pattern_key = " → ".join(cycle_list)
-        if pattern_key:
-            cycle_patterns[pattern_key] = cycle_patterns.get(pattern_key, 0) + 1
-
-    # 사이클 반복 경고
-    for pattern, count in cycle_patterns.items():
-        if count >= 3:
-            result["warnings"].append(
-                f"같은 사이클 패턴 {count}회 반복 감지: '{pattern}' — 변주 4기법 적용 필요 "
-                f"(순서 역전 / 압축 / 차단 / 침범)"
-            )
-
-    return result
-
-
-def build_antagonist_actions_block(act1: dict, act2: dict, act3: dict,
-                                    char_bible: dict = None) -> dict:
-    """v2.6.0 ② 적대자 능동성 설계 — 비트별 적대자 행위 매핑.
-
-    출력:
-        {
-          "Reza": {
-            "beat_6": "문서 파기",
-            "beat_8": "Maya 감시 지시",
-            "beat_10": "직접 위협"
-          },
-          "warnings": [...]
-        }
-    """
-    all_beats = _collect_all_beats(act1, act2, act3)
-    result = {"warnings": []}
-
-    # 캐릭터 바이블에서 적대자 이름 추출 (가능하면)
-    antagonist_names = []
-    if char_bible and isinstance(char_bible, dict):
-        chars = char_bible.get("characters", []) if isinstance(char_bible.get("characters"), list) else []
-        for c in chars:
-            if isinstance(c, dict) and c.get("role") == "antagonist":
-                name = c.get("name", "")
-                if name:
-                    antagonist_names.append(name)
-
-    # 비트별 antagonist_active_action 수집 (이름 매칭 불가 시 단일 antagonist로 처리)
-    has_passive_only = []
-    for beat in all_beats:
-        try:
-            beat_no = int(beat.get("beat_no", 0))
-        except (ValueError, TypeError):
-            continue
-        action = beat.get("antagonist_active_action", "") or ""
-        if not action:
-            continue
-        # 적대자 이름 매칭 시도 (없으면 default antagonist)
-        matched_name = None
-        for name in antagonist_names:
-            if name and name in action:
-                matched_name = name
-                break
-        target = matched_name or "antagonist"
-        if target not in result:
-            result[target] = {}
-        result[target][f"beat_{beat_no}"] = action
-
-        # 수동 회피만으로 처리된 비트 감지
-        passive_keywords = ["침묵", "외면", "돌아보지 않", "대답하지 않", "자리를 뜬"]
-        is_passive_only = (
-            any(kw in action for kw in passive_keywords)
-            and not any(active_kw in action for active_kw in [
-                "파기", "지시", "위협", "차단", "감시", "조작", "공격",
-                "함정", "협박", "회유", "매수", "결성", "유도", "압박"
-            ])
-        )
-        if is_passive_only:
-            has_passive_only.append(beat_no)
-
-    if has_passive_only:
-        result["warnings"].append(
-            f"수동 회피만으로 처리된 적대자 비트 감지: Beat {has_passive_only} — "
-            f"능동 행위(파기·지시·위협 등)로 교체 필요"
-        )
-
-    return result
-
-
-def build_setup_payoff_table(act1: dict, act2: dict, act3: dict) -> list:
-    """v2.6.0 ③ Setup-Payoff 의도 배치 — 도입·회수 추적 테이블.
-
-    출력:
-        [
-          {"item": "Pak Wiranto", "setup_beat": 3, "payoff_beat": 10, "status": "회수 완료"},
-          {"item": "검은 세단", "setup_beat": 8, "payoff_beat": None, "status": "회수 필요"},
-          ...
-        ]
-    """
-    all_beats = _collect_all_beats(act1, act2, act3)
-    setup_map = {}  # item -> setup_beat
-    payoff_map = {}  # item -> payoff_beat
-
-    for beat in all_beats:
-        try:
-            beat_no = int(beat.get("beat_no", 0))
-        except (ValueError, TypeError):
-            continue
-        sp_id = beat.get("setup_payoff_id", "") or ""
-        if not sp_id:
-            continue
-        # 복수 항목 처리 (쉼표 구분)
-        for entry in sp_id.split(","):
-            entry = entry.strip()
-            if ":" not in entry:
-                continue
-            kind, item = entry.split(":", 1)
-            kind = kind.strip().upper()
-            item = item.strip()
-            if not item:
-                continue
-            if kind == "SETUP":
-                if item not in setup_map:  # 첫 도입 비트만 기록
-                    setup_map[item] = beat_no
-            elif kind == "PAYOFF":
-                if item not in payoff_map:  # 첫 회수 비트만 기록
-                    payoff_map[item] = beat_no
-
-    # 통합 테이블 생성
-    all_items = set(setup_map.keys()) | set(payoff_map.keys())
-    table = []
-    for item in sorted(all_items):
-        setup_beat = setup_map.get(item)
-        payoff_beat = payoff_map.get(item)
-        if setup_beat and payoff_beat:
-            status = "회수 완료"
-        elif setup_beat and not payoff_beat:
-            status = "회수 필요"
-        elif not setup_beat and payoff_beat:
-            status = "Plant 없는 Payoff (데우스 엑스 마키나 위험)"
-        else:
-            continue
-        table.append({
-            "item": item,
-            "setup_beat": setup_beat,
-            "payoff_beat": payoff_beat,
-            "status": status
-        })
-    return table
-
-
-def build_physical_cost_plan_block(act1: dict, act2: dict, act3: dict,
-                                    char_bible: dict = None) -> dict:
-    """v2.6.0 ④ 물리적 대가 4단계 계획 — 주인공 카드 + 비트별 단계 매핑.
-
-    출력:
-        {
-          "stage_1": {"beats": "1~5", "cost": "..."},
-          "stage_2": {"beats": "6~8", "cost": "..."},
-          "stage_3": {"beats": "9~11", "cost": "..."},
-          "stage_4": {"beats": "12~", "cost": "..."},
-          "beat_stages": [{"beat": 1, "stage": 1, "description": "..."}, ...],
-          "warnings": [...]
-        }
-    """
-    all_beats = _collect_all_beats(act1, act2, act3)
-    result = {
-        "stage_1": {"beats": "1~5", "cost": ""},
-        "stage_2": {"beats": "6~8", "cost": ""},
-        "stage_3": {"beats": "9~11", "cost": ""},
-        "stage_4": {"beats": "12~", "cost": ""},
-        "beat_stages": [],
-        "warnings": []
-    }
-
-    # 캐릭터 바이블에서 주인공의 physical_cost_plan 추출
-    if char_bible and isinstance(char_bible, dict):
-        chars = char_bible.get("characters", []) if isinstance(char_bible.get("characters"), list) else []
-        for c in chars:
-            if isinstance(c, dict) and c.get("role") == "protagonist":
-                plan_str = c.get("physical_cost_plan", "") or ""
-                if plan_str:
-                    # 'stage_1 (beats 1-5): ... / stage_2 (beats 6-8): ...' 파싱
-                    import re
-                    # 각 단계 패턴 추출
-                    for stage_num in [1, 2, 3, 4]:
-                        pattern = rf"stage_{stage_num}\s*\([^)]*\):\s*([^/]+?)(?=\s*/\s*stage_|\s*$)"
-                        match = re.search(pattern, plan_str)
-                        if match:
-                            result[f"stage_{stage_num}"]["cost"] = match.group(1).strip()
-                break
-
-    # 비트별 단계 수집
-    prev_stage = 0
-    has_jump = []
-    has_reset = []
-    for beat in all_beats:
-        try:
-            beat_no = int(beat.get("beat_no", 0))
-        except (ValueError, TypeError):
-            continue
-        try:
-            stage = int(beat.get("physical_cost_stage", 0))
-        except (ValueError, TypeError):
-            stage = 0
-        description = beat.get("physical_cost_description", "") or ""
-        result["beat_stages"].append({
-            "beat": beat_no,
-            "stage": stage,
-            "description": description
-        })
-        # 단계 점프 감지 (1 → 3 같은 비정상 격상)
-        if prev_stage > 0 and stage > prev_stage + 1:
-            has_jump.append((prev_stage, stage, beat_no))
-        # 단계 리셋 감지 (대가 진행 후 0으로 회귀)
-        if prev_stage > 0 and stage == 0 and beat_no >= 6:
-            has_reset.append(beat_no)
-        if stage > 0:
-            prev_stage = max(prev_stage, stage)
-
-    # 경고 생성
-    if has_jump:
-        jumps_str = ", ".join([f"Beat {b}: {a}→{c}" for a, c, b in has_jump])
-        result["warnings"].append(
-            f"단계 점프 감지 ({jumps_str}) — 1→2→3→4 순서대로 격상되어야 함"
-        )
-    if has_reset:
-        result["warnings"].append(
-            f"단계 리셋 의심 (Beat {has_reset}): 대가 진행 후 stage=0으로 회귀 — "
-            f"이전 단계 흔적은 사라지지 않아야 함"
-        )
-    if prev_stage < 4:
-        result["warnings"].append(
-            f"최종 단계가 {prev_stage}단계 — 4단계까지 도달해야 클라이맥스의 무게가 생김"
-        )
-
-    return result
-
-
-def build_writer_engine_handoff_v26(act1: dict, act2: dict, act3: dict,
-                                     char_bible: dict = None) -> dict:
-    """v2.6.0 통합 후처리 — Writer Engine v3.7.1 인계용 4블록 산출.
-
-    Treatment Build 완료 후 호출. 결과는 프로젝트 JSON의
-    treatment.writer_handoff_v26 필드로 저장된다.
-
-    Args:
-        act1, act2, act3: Treatment Build 3개 막 출력
-        char_bible: Character Bible (적대자·주인공 이름 매칭용, 없으면 fallback)
-
-    Returns:
-        {
-          "cycle_design": {...},
-          "antagonist_actions": {...},
-          "setup_payoff_table": [...],
-          "physical_cost_plan": {...},
-          "version": "v2.6.0"
-        }
-    """
-    return {
-        "cycle_design": build_cycle_design_block(act1, act2, act3),
-        "antagonist_actions": build_antagonist_actions_block(act1, act2, act3, char_bible),
-        "setup_payoff_table": build_setup_payoff_table(act1, act2, act3),
-        "physical_cost_plan": build_physical_cost_plan_block(act1, act2, act3, char_bible),
-        "version": "v2.6.0"
-    }
-
-
-def call_treatment_meta(act1, act2, act3, core_data):
-    """Treatment 감정곡선 + 감독포인트 + 투자자요약"""
     try:
-        client = get_client()
-        all_beats = []
-        for act_data in [act1, act2, act3]:
-            if act_data:
-                for b in act_data.get("beats", []):
-                    all_beats.append(f"Beat {b.get('beat_no','')}. {b.get('beat_name','')}")
-
-        # v2.1: 캐릭터 목록 추출 (이름 교차검증용)
-        chars = core_data.get("characters", []) + core_data.get("extended_characters", [])
-        char_registry = []
-        for c in chars:
-            name = c.get("name", "")
-            role = c.get("role", "")
-            age = c.get("age", "")
-            if name:
-                char_registry.append(f"{name}({age}, {role})")
-        char_registry_str = " / ".join(char_registry) if char_registry else "(캐릭터 정보 없음)"
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL, max_tokens=2000, temperature=0.3,
-            system=P.SYSTEM_TREATMENT_META,
-            messages=[{"role": "user", "content": f"""[트리트먼트 비트 목록]
-{json.dumps(all_beats, ensure_ascii=False)}
-
-[로그라인] {core_data.get("logline_pack",{}).get("washed","")}
-
-[★ 등장 캐릭터 레지스트리 — 감독 포인트에서 이름을 쓸 때 반드시 이 목록의 이름만 사용할 것]
-{char_registry_str}
-
-[JSON 스키마]
-{{
-  "emotion_curve": [
-    {{"point": "Beat 라벨", "tension": 0, "emotion": "감정"}}
-  ],
-  "director_notes": ["감독용 포인트 1", "감독용 포인트 2", "감독용 포인트 3"],
-  "investor_summary": "투자자용 요약 3~4문장"
-}}
-
-규칙:
-- emotion_curve 16개 포인트. tension 1~10. director_notes 3개.
-- ★ director_notes에 캐릭터 이름을 언급할 때 반드시 위 [등장 캐릭터 레지스트리]의 이름만 사용하라.
-- ★ 캐릭터의 역할(주인공/적대자/조력자 등)과 나이에 맞지 않는 연출 지시를 절대 하지 마라.
-  예: 9세 아이에게 '구조적 폭탄', '위협감', '주도권' 같은 어른 연출 지시를 붙이면 안 된다.
-- ★ 감독 포인트에서 특정 비트의 연출을 지시할 때는 해당 비트의 실제 주체(누가 그 행동을 하는가)와
-  일치하는 이름을 써라. 비트 이름에서 임의로 인물명을 추출하면 안 된다.
-- ★ 클라이맥스 질문의 주체가 누구인지(주인공인지, 적대자인지, 조력자인지) 반드시 확인한 후 이름을 지정하라.
-"""}]
-        )
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        return safe_json_loads(txt)
-    except Exception as e:
-        st.error(f"Treatment 메타 생성 실패: {e}")
-        return None
+        cleaned = re.sub(r'(?<="):\s*"([^"]*)"\s*([,\}])',
+                         lambda m: f': "{m.group(1).replace(chr(34), chr(39))}" {m.group(2)}',
+                         text)
+        return json.loads(cleaned)
+    except Exception:
+        return {"_parse_error": True, "_raw": text}
 
 
-def call_treatment_gate(treatment_data, core_data=None, genre=""):
-    """Gate E: Treatment Gate 채점 — v2.3.6 강화판.
-    
-    이전 문제: beat_summary에 글자 수(chars)만 전달. 실제 내용 미검증.
-    v2.3.6: 각 비트의 narrative 내용 요약 + 장르 + Core Build 참조를 전달하여
-           장르 기대 충족, 엔딩 정합, 논리 일관성을 실제로 검증.
-    """
-    try:
-        client = get_client()
-        
-        # v2.3.6: 실제 narrative 내용도 전달 (압축 요약)
-        beat_details = []
-        for act_key in ["act1", "act2", "act3"]:
-            act_data = treatment_data.get(act_key, {})
-            if act_data:
-                for b in act_data.get("beats", []):
-                    narrative = b.get("narrative", "")
-                    # 각 비트 narrative를 500자로 압축 (앞 400자 + 뒤 100자)
-                    if len(narrative) > 500:
-                        narrative_compact = narrative[:400] + " ... [중략] ... " + narrative[-100:]
-                    else:
-                        narrative_compact = narrative
-                    beat_details.append({
-                        "beat_no": b.get("beat_no"),
-                        "beat_name": b.get("beat_name"),
-                        "length": len(narrative),
-                        "story_position": b.get("story_position", ""),  # v2.6.5: 기승전결 좌표
-                        "narrative_summary": narrative_compact,
-                    })
-        
-        # v2.3.6: Core Build 핵심 정보 전달 (엔딩 정합 검증용)
-        # v2.3.7: world_build.time 등 시대 고증 검증용 정보 추가
-        core_context = ""
-        if core_data:
-            gns = core_data.get("goal_need_strategy", {})
-            lp = core_data.get("logline_pack", {})
-            wb = core_data.get("world_build", {})
-            ending_payoff = gns.get("ending_payoff", "")
-            strategy = gns.get("strategy", "")
-            
-            # 시대/공간 정보 추출
-            time_setting = wb.get("time", "")
-            space_setting = wb.get("space", "")
-            rules = wb.get("rules", "")
-            
-            core_context = f"""
-[Core Build 참조 — 이 Treatment가 일관되게 구현해야 할 원본 설계]
-장르: {genre}
-로그라인: {lp.get("washed", "")}
-주인공 Strategy: {strategy}
-Ending Payoff: {ending_payoff}
-
-[★ 세계관·시대 설정 — 시대 고증 검증용 ★]
-시대/시간: {time_setting}
-공간/장소: {space_setting}
-세계관 규칙: {rules}
-
-위 시대에 존재하지 않는 요소가 Treatment에 포함되었는지 반드시 확인하라.
-(예: 1980년대 설정인데 스마트폰/SNS/AI, 1970년대인데 PC, 조선시대인데 사진기 등)
-"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL, max_tokens=2500, temperature=0.2,
-            system=P.SYSTEM_TREATMENT_GATE,
-            messages=[{"role": "user", "content": f"""{core_context}
-[Treatment 비트 구성 — 실제 내용 요약]
-{json.dumps(beat_details, ensure_ascii=False)}
-
-총 {len(beat_details)}개 비트.
-
-[JSON 스키마]
-{{
-  "gate_e_treatment": {{
-    "cinematic_reading": 0.0,
-    "scene_emotion_match": 0.0,
-    "beat_completeness": 0.0,
-    "screenplay_ready": 0.0,
-    "genre_expectation_alignment": 0.0,
-    "ending_coherence": 0.0,
-    "logic_consistency": 0.0,
-    "period_consistency": 0.0,
-    "average": 0.0,
-    "genre_check_feedback": "장르 체크리스트 기준 충족 여부 1~2문장",
-    "ending_check_feedback": "Core Build의 Ending Payoff와 실제 엔딩 비트의 정합성 1문장",
-    "logic_check_feedback": "논리 비약/세계관 일관성 이슈가 있으면 구체 비트 번호와 함께 1~2문장",
-    "period_check_feedback": "시대 고증 오류(작품 시대에 없던 기술/제도/문화 등) 구체 비트 번호와 함께 1~2문장 (없으면 '이슈 없음')",
-    "feedback": "Gate E 종합 피드백 1문장",
-    "critical_issues": ["문제가 있는 비트 번호와 짧은 진단 리스트 (없으면 빈 배열)"]
-  }}
-}}
-규칙: average = 8항목 평균 (소수점 1자리).
-특히 genre_expectation_alignment, ending_coherence, logic_consistency, period_consistency는 
-Core Build 설계와 Treatment 실제 구현의 일치도를 엄격 평가."""}]
-        )
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        return safe_json_loads(txt)
-    except Exception as e:
-        st.error(f"Gate E 실패: {e}")
-        return None
+def call_claude(client: Anthropic, prompt_text: str, model: str = ANTHROPIC_MODEL_SONNET) -> Dict[str, Any]:
+    response = client.messages.create(
+        model=model,
+        max_tokens=MAX_TOKENS,
+        messages=[{"role": "user", "content": prompt_text}],
+    )
+    raw = response.content[0].text
+    return safe_json_loads(raw)
 
 
-# ─── API Call: Tone Document ───
-def call_tone_document(core_data, structure_data, scene_data, treatment_data, char_bible, genre, fmt, locked_block="",
-                        fact_based=False, historical=False, film_type=""):
-    """톤 & 연출 문서 — Writer Engine의 스타일 가이드"""
-    try:
-        client = get_client()
-        lp = core_data.get("logline_pack", {})
-        gns = core_data.get("goal_need_strategy", {})
-        nd = core_data.get("narrative_drive", {})
-        wb = core_data.get("world_build", {})
-
-        # 캐릭터 이름/역할만 추출
-        char_names = []
-        if char_bible:
-            for c in char_bible.get("characters", []):
-                char_names.append(f"{c.get('name','')}({c.get('role','')})")
-        char_str = ", ".join(char_names)
-
-        # Treatment 요약
-        treatment_summary = ""
-        for act_key in ["act1", "act2", "act3"]:
-            act = treatment_data.get(act_key, {})
-            if act:
-                for b in act.get("beats", []):
-                    treatment_summary += f"Beat {b.get('beat_no','')}: {b.get('beat_name','')}. "
-
-        # v2.4.0: 시대극 자동 감지 컨텍스트 추출
-        _locked_text, _idea_text = _get_period_scan_context({
-            "genre": genre,
-            "core_data": core_data or {},
-            "locked_items": [locked_block] if locked_block else [],
-        })
-        system_prompt = P.build_system_tone_document(genre, fmt,
-                                                       fact_based=fact_based, historical=historical, film_type=film_type,
-                                                       locked_text=_locked_text, idea_text=_idea_text)
-
-        user_prompt = f"""[로그라인]
-{lp.get("washed","")}
-
-[캐릭터]
-{char_str}
-
-[세계관]
-{json.dumps(wb, ensure_ascii=False)}
-
-[Treatment 비트 구성]
-{treatment_summary}
-{locked_block}
-
-[JSON 스키마]
-{P.TONE_DOC_SCHEMA}"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL_OPUS, max_tokens=16000, temperature=0.3,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-        if response.stop_reason == "max_tokens":
-            # 분량 줄여서 재시도
-            retry_prompt = user_prompt.replace(
-                "카메라 철학 2~3문장", "카메라 철학 1~2문장"
-            ).replace(
-                "이 작품에서 절대 하지 말아야 할 연출/톤/대사 규칙 5개",
-                "이 작품에서 절대 하지 말아야 할 규칙 3개"
-            )
-            response = client.messages.create(
-                model=ANTHROPIC_MODEL_OPUS, max_tokens=16000, temperature=0.3,
-                system=system_prompt,
-                messages=[{"role": "user", "content": retry_prompt}]
-            )
-        txt = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-        st.session_state["last_tone_doc_raw"] = txt
-
-        # JSON 파싱 시도 — 실패 시 자동 재시도 1회
-        try:
-            return safe_json_loads(txt)
-        except json.JSONDecodeError:
-            st.warning("⚠️ Tone Document JSON 파싱 실패 — 자동 재시도 중...")
-            retry_system = system_prompt + "\n\n★ 최우선: 반드시 유효한 JSON만 출력. 따옴표는 작은따옴표만. 줄바꿈·역슬래시 금지. ★"
-            response2 = client.messages.create(
-                model=ANTHROPIC_MODEL_OPUS, max_tokens=16000, temperature=0.2,
-                system=retry_system,
-                messages=[{"role": "user", "content": user_prompt}]
-            )
-            txt2 = "".join(b.text for b in response2.content if hasattr(b, "text")).strip()
-            st.session_state["last_tone_doc_raw"] = txt2
-            return safe_json_loads(txt2)
-
-    except Exception as e:
-        st.error(f"Tone Document 생성 실패: {e}")
-        raw = st.session_state.get("last_tone_doc_raw", "")
-        if raw:
-            with st.expander("🔧 Tone Document Raw (디버그)"):
-                st.text_area("Raw", raw, height=400)
-        return None
+# ─────────────────────────────────────
+# DOCX Export
+# ─────────────────────────────────────
+def add_section_header_docx(doc, kr: str, en: str):
+    p = doc.add_paragraph()
+    run_kr = p.add_run(kr + " ")
+    run_kr.font.size = Pt(14)
+    run_kr.font.bold = True
+    run_kr.font.color.rgb = RGBColor(0x19, 0x19, 0x70)
+    run_en = p.add_run(en)
+    run_en.font.size = Pt(11)
+    run_en.font.italic = True
+    run_en.font.color.rgb = RGBColor(0x6B, 0x6B, 0x7B)
+    pPr = p._p.get_or_add_pPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), 'FFCB05')
+    pPr.append(shd)
 
 
-# ─── DOCX 생성 ───
-def generate_docx(project):
-    """기획개발보고서 DOCX 생성 — BLUE JEANS 기획서 스타일"""
-    from docx import Document
-    from docx.shared import Pt, Inches, RGBColor, Cm, Emu
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.enum.table import WD_TABLE_ALIGNMENT
-    from docx.oxml.ns import qn, nsdecls
-    from docx.oxml import parse_xml
-    import io
+def add_para(doc, text: str, bold: bool = False, italic: bool = False, size: int = 11):
+    p = doc.add_paragraph()
+    run = p.add_run(text)
+    run.font.size = Pt(size)
+    run.font.bold = bold
+    run.font.italic = italic
 
-    NAVY = RGBColor(0x19, 0x19, 0x70)
-    YELLOW = RGBColor(0xFF, 0xCB, 0x05)
-    DIM = RGBColor(0x88, 0x88, 0x99)
-    BLACK = RGBColor(0x1A, 0x1A, 0x2E)
-    WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 
+def build_diagnostic_docx(state: Dict[str, Any]) -> bytes:
     doc = Document()
-
-    # ── 기본 스타일 ──
-    style = doc.styles['Normal']
-    style.font.name = 'Pretendard'
-    style.font.size = Pt(10)
-    style.font.color.rgb = BLACK
-    style.paragraph_format.line_spacing = 1.4
-    style.paragraph_format.space_after = Pt(4)
-
-    # 페이지 여백
     for section in doc.sections:
         section.top_margin = Cm(2.5)
         section.bottom_margin = Cm(2.5)
-        section.left_margin = Cm(2.8)
-        section.right_margin = Cm(2.8)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
 
-    # ── 헬퍼 함수 ──
-    def add_yellow_header(kr_text, en_text=""):
-        """노란 하이라이트 섹션 헤더 (한글 + ENGLISH 병기)"""
-        p = doc.add_paragraph()
-        p.paragraph_format.space_before = Pt(18)
-        p.paragraph_format.space_after = Pt(10)
-        # 노란 배경 셰이딩
-        shading = parse_xml(f'<w:shd {nsdecls("w")} w:fill="FFCB05" w:val="clear"/>')
-        p.paragraph_format.element.get_or_add_pPr().append(shading)
-        # 한글
-        run_kr = p.add_run(f"  {kr_text}")
-        run_kr.font.size = Pt(13)
-        run_kr.font.bold = True
-        run_kr.font.color.rgb = NAVY
-        run_kr.font.name = 'Pretendard'
-        # ENGLISH
-        if en_text:
-            run_en = p.add_run(f"  {en_text}")
-            run_en.font.size = Pt(9)
-            run_en.font.bold = True
-            run_en.font.color.rgb = NAVY
-            run_en.font.name = 'Pretendard'
-        return p
+    title_p = doc.add_paragraph()
+    title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title_p.add_run("IDEA DIAGNOSTIC REPORT")
+    run.font.size = Pt(28)
+    run.font.bold = True
+    run.font.color.rgb = RGBColor(0x19, 0x19, 0x70)
+    
+    sub = doc.add_paragraph()
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = sub.add_run("아이디어 진단 보고서")
+    run.font.size = Pt(14)
+    run.font.color.rgb = RGBColor(0x6B, 0x6B, 0x7B)
+    
+    doc.add_paragraph()
+    inp = state["stage_1_input"]
+    
+    tp = doc.add_paragraph()
+    tp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = tp.add_run(inp["title"])
+    run.font.size = Pt(20)
+    run.font.bold = True
+    
+    info = doc.add_paragraph()
+    info.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = info.add_run(f"{inp['genre']} · {inp['format']} · {inp['target_market']}")
+    run.font.size = Pt(11)
+    run.font.italic = True
+    run.font.color.rgb = RGBColor(0x6B, 0x6B, 0x7B)
 
-    def add_sub_header(text):
-        """서브 헤더 (네이비 좌측 볼드)"""
-        p = doc.add_paragraph()
-        p.paragraph_format.space_before = Pt(12)
-        p.paragraph_format.space_after = Pt(6)
-        run = p.add_run(text)
-        run.font.size = Pt(11)
-        run.font.bold = True
-        run.font.color.rgb = NAVY
-        return p
-
-    def add_body(text, size=10):
-        """본문 텍스트"""
-        if not text:
-            return
-        p = doc.add_paragraph()
-        run = p.add_run(str(text))
-        run.font.size = Pt(size)
-        run.font.color.rgb = BLACK
-        p.paragraph_format.line_spacing = 1.5
-        return p
-
-    def add_labeled(label, text, bold_label=True):
-        """라벨 + 텍스트"""
-        if not text:
-            return
-        p = doc.add_paragraph()
-        p.paragraph_format.space_after = Pt(3)
-        run_l = p.add_run(f"[{label}]  ")
-        run_l.font.size = Pt(9)
-        run_l.font.bold = bold_label
-        run_l.font.color.rgb = NAVY
-        run_t = p.add_run(str(text))
-        run_t.font.size = Pt(10)
-        run_t.font.color.rgb = BLACK
-        return p
-
-    def add_quote(character, dialogue):
-        """캐릭터 대사 인용구"""
-        if not dialogue:
-            return
-        p = doc.add_paragraph()
-        p.paragraph_format.left_indent = Cm(1)
-        p.paragraph_format.space_before = Pt(6)
-        p.paragraph_format.space_after = Pt(6)
-        # 왼쪽 보더 효과: 인용부호로 대체
-        run = p.add_run(f'"{dialogue}"')
-        run.font.size = Pt(10)
-        run.font.italic = True
-        run.font.color.rgb = NAVY
-        if character:
-            run2 = p.add_run(f"\n— {character}")
-            run2.font.size = Pt(9)
-            run2.font.color.rgb = DIM
-
-    def add_spacer(height=6):
-        p = doc.add_paragraph()
-        p.paragraph_format.space_before = Pt(height)
-        p.paragraph_format.space_after = Pt(0)
-
-    # ═══════════════════════════════════
-    #  COVER PAGE
-    # ═══════════════════════════════════
-    add_spacer(60)
-
-    # "작품 기획안"
-    p0 = doc.add_paragraph()
-    p0.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r0 = p0.add_run("작 품 기 획 안")
-    r0.font.size = Pt(11)
-    r0.font.color.rgb = DIM
-    r0.font.name = 'Pretendard'
-
-    add_spacer(12)
-
-    # 작품 제목 (대형)
-    title_text = project.get("title", "제목 없음")
-    p1 = doc.add_paragraph()
-    p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r1 = p1.add_run(title_text)
-    r1.font.size = Pt(32)
-    r1.font.bold = True
-    r1.font.color.rgb = NAVY
-    r1.font.name = 'Pretendard'
-
-    # 장르 · 타겟 · 포맷
-    p2 = doc.add_paragraph()
-    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    meta_text = f"{project.get('genre','')}  ·  {project.get('target_market','')}  ·  {project.get('format','')}"
-    r2 = p2.add_run(meta_text)
-    r2.font.size = Pt(10)
-    r2.font.color.rgb = DIM
-
-    add_spacer(40)
-
-    # 노란 구분선
-    p_line = doc.add_paragraph()
-    p_line.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r_line = p_line.add_run("━" * 30)
-    r_line.font.size = Pt(10)
-    r_line.font.color.rgb = YELLOW
-
-    add_spacer(12)
-
-    # 로그라인 미리보기 (있으면)
-    core = project.get("core", {})
-    lp = core.get("logline_pack", {}) if core else {}
-    washed = lp.get("washed", "")
-    if washed:
-        p_log = doc.add_paragraph()
-        p_log.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r_log = p_log.add_run(washed)
-        r_log.font.size = Pt(10)
-        r_log.font.italic = True
-        r_log.font.color.rgb = BLACK
-
-    add_spacer(50)
-
-    # 기획/제작 크레딧
-    p_credit = doc.add_paragraph()
-    p_credit.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r_c1 = p_credit.add_run("기획 · 공동제작\n")
-    r_c1.font.size = Pt(9)
-    r_c1.font.color.rgb = DIM
-    r_c2 = p_credit.add_run("BLUE JEANS PICTURES")
-    r_c2.font.size = Pt(14)
-    r_c2.font.bold = True
-    r_c2.font.color.rgb = NAVY
-    r_c2.font.name = 'Pretendard'
+    doc.add_paragraph()
+    doc.add_paragraph()
+    
+    today = doc.add_paragraph()
+    today.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = today.add_run(f"발행일: {datetime.now().strftime('%Y년 %m월 %d일')}")
+    run.font.size = Pt(10)
+    run.font.color.rgb = RGBColor(0x6B, 0x6B, 0x7B)
+    
+    bjp = doc.add_paragraph()
+    bjp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = bjp.add_run(f"BLUE JEANS PICTURES · Idea Engine {ENGINE_VERSION}")
+    run.font.size = Pt(10)
+    run.font.color.rgb = RGBColor(0x19, 0x19, 0x70)
+    run.font.bold = True
 
     doc.add_page_break()
 
-    # ═══════════════════════════════════
-    #  SECTION 1: 로그라인 LOGLINE
-    # ═══════════════════════════════════
-    if core:
-        add_yellow_header("로그라인", "LOGLINE")
-        for label, key in [("Original","original"),("Washed","washed"),("투자자용","investor"),("감독용","director"),("캐릭터 훅","character_hook")]:
-            val = lp.get(key, "")
-            if val:
-                add_labeled(label, val)
+    add_section_header_docx(doc, "1. 원본 아이디어", "ORIGINAL IDEA")
+    add_para(doc, inp["raw_idea"])
+    doc.add_paragraph()
 
-        # ── 기획의도 KEY POINTS ──
-        add_yellow_header("기획의도", "KEY POINTS")
-        pi = core.get("project_intent", {})
-        add_labeled("소재", pi.get("subject", ""))
-        add_labeled("장르", pi.get("genre_approach", ""))
-        add_labeled("시장", pi.get("market_rationale", ""))
-        add_labeled("Pitch", pi.get("pitch", ""))
-        add_labeled("Theme", pi.get("theme", ""))
+    if state["stage_2_logline"]:
+        add_section_header_docx(doc, "2. 로그라인 정제", "LOGLINE REFINEMENT")
+        ll = state["stage_2_logline"]
+        for v in ll.get("logline_variants", []):
+            add_para(doc, f"[{v['variant']}안 - {v['label']}]", bold=True)
+            add_para(doc, v["logline"])
+            add_para(doc, f"  강점: {v['strength']}", italic=True, size=10)
+            add_para(doc, f"  약점: {v['weakness']}", italic=True, size=10)
+            doc.add_paragraph()
+        add_para(doc, f"▶ 추천: {ll.get('recommended', '')}안", bold=True)
+        add_para(doc, ll.get("recommendation_reason", ""))
+        doc.add_paragraph()
 
-        # ── G/N/S ──
-        add_yellow_header("드라마 구조", "GOAL / NEED / STRATEGY")
-        gns = core.get("goal_need_strategy", {})
-        add_labeled("Goal", gns.get("goal", ""))
-        add_labeled("Need", gns.get("need", ""))
-        add_labeled("Strategy", gns.get("strategy", ""))
-        add_labeled("Risk", gns.get("risk", ""))
-        add_labeled("Ending Payoff", gns.get("ending_payoff", ""))
-
-        # ── 서사동력 NARRATIVE DRIVE ──
-        nd = core.get("narrative_drive", {})
-        if nd:
-            add_spacer(6)
-            add_sub_header("▎ 서사동력  ·  Narrative Drive")
-            origin = nd.get("desire_origin", "")
-            origin_kr = "상실(Loss)" if origin == "loss" else "결핍(Lack)" if origin == "lack" else origin
-            add_labeled("발생요인", f"{origin_kr} — {nd.get('origin_detail', '')}")
-            add_labeled("아크 방향", nd.get("arc_direction", ""))
-            add_labeled("해결전략", nd.get("resolution_strategy", ""))
-            add_labeled("Goal↔Need 간극", nd.get("goal_need_gap", ""))
-
-        # ── 오프닝 전략 OPENING STRATEGY (v2.2 신규) ──
-        os_data = core.get("opening_strategy", {})
-        if os_data:
-            add_yellow_header("오프닝 전략", "OPENING STRATEGY")
-            add_labeled("오프닝 타입", os_data.get("opening_type", ""))
-            add_labeled("오프닝 의도", os_data.get("opening_intent", ""))
-            add_labeled("도파민 포인트", os_data.get("dopamine_point", ""))
-            add_labeled("1막 연결 방식", os_data.get("opening_to_act1_link", ""))
-            add_labeled("훅 라인/이미지", os_data.get("opening_hook_line", ""))
-            add_labeled("장르 DNA 체크", os_data.get("genre_dna_check", ""))
-
-        # ── 세계관 WORLD ──
-        add_yellow_header("세계관", "WORLD BUILDING")
-        wb = core.get("world_build", {})
-        for label, key in [("시간","time"),("공간","space"),("규칙","rules"),("금기","taboo"),("권력구조","power_structure")]:
-            add_labeled(label, wb.get(key, ""))
-
-        doc.add_page_break()
-
-        # ── 캐릭터 CHARACTER ──
-        add_yellow_header("캐릭터", "CHARACTER")
-        role_labels = {"protagonist":"주인공","antagonist":"적대자","ally":"조력자","mirror":"거울","catalyst":"촉매자","subplot_lead":"서브플롯 리드"}
-        all_core_chars = core.get("characters", []) + core.get("extended_characters", [])
-        for ch in all_core_chars:
-            role = role_labels.get(ch.get("role",""), ch.get("role",""))
-            name = ch.get("name", "")
-
-            # 캐릭터 이름 헤더
-            add_sub_header(f"▎ {role}  ·  {name}")
-
-            add_body(ch.get("description", ""))
-            add_labeled("욕망", ch.get("goal", ""))
-            add_labeled("결핍", ch.get("need", ch.get("flaw", "")))
-            add_labeled("대사톤", ch.get("dialogue_tone", ""))
-
-            # 대사 인용구 (있으면)
-            key_dialogue = ch.get("key_dialogue", ch.get("signature_line", ""))
-            if key_dialogue:
-                add_quote(name, key_dialogue)
-
-            add_spacer(8)
-
-    # ── Character Bible (확장) ──
-    char_bible = project.get("char_bible", {})
-    if char_bible:
-        doc.add_page_break()
-        add_yellow_header("캐릭터 바이블", "CHARACTER BIBLE")
-
-        for ch in char_bible.get("characters", []):
-            role_kr = {"protagonist":"주인공","antagonist":"적대자","ally":"조력자","mirror":"거울","catalyst":"촉매자","subplot_lead":"서브플롯 리드"}
-            role = role_kr.get(ch.get("role",""), ch.get("role",""))
-            name = ch.get("name","")
-            age = ch.get("age","")
-
-            add_sub_header(f"▎ {role} · {name} ({age})")
-
-            add_labeled("외형·첫인상", ch.get("appearance",""))
-            add_labeled("직업/위치", ch.get("occupation",""))
-            add_body(ch.get("backstory",""))
-
-            add_labeled("비밀", ch.get("secret",""))
-            add_labeled("신념", ch.get("belief",""))
-            add_labeled("두려움", ch.get("fear",""))
-
-            habits = ch.get("habits", [])
-            if habits:
-                h_str = " · ".join(habits) if isinstance(habits, list) else str(habits)
-                add_labeled("반복 습관", h_str)
-
-            sp = ch.get("speech_pattern", [])
-            if sp:
-                sp_list = sp if isinstance(sp, list) else [sp]
-                for i, s in enumerate(sp_list, 1):
-                    add_labeled(f"말투 {i}", s)
-
-            sl = ch.get("sample_lines", {})
-            if sl:
-                sl_labels = {"normal":"평상시","angry":"분노","vulnerable":"취약"}
-                for k, v in sl.items():
-                    label = sl_labels.get(k, k)
-                    add_quote(f"{name} — {label}", v)
-
-            ra = ch.get("relationship_attitudes", [])
-            if ra:
-                ra_list = ra if isinstance(ra, list) else [ra]
-                for r in ra_list:
-                    add_labeled("관계", r)
-
-            arc = ch.get("arc_detail", {})
-            if arc:
-                add_labeled("1막 끝", arc.get("act1_end",""))
-                add_labeled("미드포인트", arc.get("midpoint",""))
-                add_labeled("클라이맥스", arc.get("climax",""))
-
-            add_spacer(10)
-
-    doc.add_page_break()
-
-    # ═══════════════════════════════════
-    #  SECTION 2: 시놉시스 SYNOPSIS
-    # ═══════════════════════════════════
-    story = project.get("structure_story", {})
-    diag = project.get("structure_diag", {})
-
-    if story:
-        add_yellow_header("시놉시스", "SYNOPSIS")
-        syn = story.get("synopsis_1p", {})
-        for label, key in [("시작","opening"),("촉발사건","catalyst"),("전개","development"),("미드포인트","midpoint"),("붕괴","collapse"),("결전","climax"),("결말","ending")]:
-            add_labeled(label, syn.get(key, ""))
-
-        # 줄글 시놉시스
-        prose = project.get("structure_prose", {})
-        if prose and prose.get("prose"):
-            add_spacer(6)
-            add_sub_header("기승전결 시놉시스")
-            add_body(prose["prose"])
-
-        doc.add_page_break()
-
-        # ── 스토리라인 STORYLINE ──
-        add_yellow_header("스토리라인", "STORYLINE")
-        for seq in story.get("storyline", []):
-            seq_no = seq.get("seq", "")
-            label = seq.get("label", "")
-            add_sub_header(f"SEQ {seq_no}  ·  {label}")
-            add_body(seq.get("summary", ""))
-
-    if diag:
-        doc.add_page_break()
-
-        # ── 3막 구조 진단 ──
-        add_yellow_header("3막 구조 진단", "THREE-ACT STRUCTURE")
-        ta = diag.get("three_act", {})
-        for label, key in [("1막 끝","act1_end"),("미드포인트","act2_midpoint"),("All Is Lost","act2_end"),("클라이맥스","act3_climax")]:
-            add_labeled(label, ta.get(key, ""))
-
-        add_spacer(6)
-        add_sub_header("15-Beat Sheet")
-        for bt in diag.get("beat_sheet", []):
-            beat = bt.get("beat", "")
-            status = bt.get("status", "")
-            note = bt.get("note", "")
-            status_mark = "✓" if status in ["있음","O","✓"] else "△" if status in ["약함","△"] else "✗"
-            add_labeled(beat, f"{status_mark} {note}")
-
-    doc.add_page_break()
-
-    # ═══════════════════════════════════
-    #  SECTION 3: 장면 설계 SCENE DESIGN
-    # ═══════════════════════════════════
-    scene_design = project.get("scene_design", {})
-    if scene_design:
-        add_yellow_header("장면 설계", "SCENE DESIGN")
-        sms = scene_design.get("scene_map_summary", {})
-        if sms.get("must_see_scenes"):
-            add_labeled("Must-See 장면", sms["must_see_scenes"])
-
-        add_spacer(6)
-
-        for sc in scene_design.get("key_scenes", []):
-            scene_no = sc.get("scene_no", "")
-            title = sc.get("title", "")
-            add_sub_header(f"S#{scene_no}  {title}")
-
-            add_labeled("장소", sc.get("location", ""))
-            add_labeled("인물", sc.get("characters", ""))
-            add_labeled("상황", sc.get("setup", ""))
-            add_labeled("행동 (Show!)", sc.get("dramatic_action", ""))
-
-            tp = sc.get("turning_point", "")
-            if tp:
-                add_labeled("전환", tp)
-            di = sc.get("dramatic_irony", "")
-            if di:
-                add_labeled("극적 아이러니", di)
-
-            add_labeled("감정 변화", sc.get("emotion_shift", ""))
-            add_labeled("시각 연출", sc.get("visual_direction", ""))
-            add_labeled("판돈", sc.get("stakes", ""))
-
-            kl = sc.get("key_line", "")
-            if kl:
-                # 핵심 대사는 인용구 스타일
-                char_name = ""
-                if ":" in kl:
-                    char_name, dialogue = kl.split(":", 1)
-                    add_quote(char_name.strip(), dialogue.strip())
-                else:
-                    add_quote("", kl)
-
-            add_spacer(4)
-
-        doc.add_page_break()
-
-    # ═══════════════════════════════════
-    #  SECTION 4: 트리트먼트 TREATMENT
-    # ═══════════════════════════════════
-    treatment = project.get("treatment", {})
-    if treatment:
-        add_yellow_header("트리트먼트", "TREATMENT")
-
-        p_info = doc.add_paragraph()
-        r_info = p_info.add_run("16비트 줄글 트리트먼트  ·  서술체 현재형  ·  대사 포함")
-        r_info.font.size = Pt(9)
-        r_info.font.color.rgb = DIM
-        r_info.font.italic = True
-
-        act_headers = {
-            1: ("1막 — 설정", "ACT 1: SET-UP"),
-            2: ("2막 — 대결", "ACT 2: CONFRONTATION"),
-            3: ("3막 — 해결", "ACT 3: RESOLUTION"),
+    if state["stage_3_hook"]:
+        add_section_header_docx(doc, "3. 후크 진단 (Gate 0)", "HOOK DIAGNOSTIC")
+        hk = state["stage_3_hook"]
+        scores = hk.get("scores", {})
+        
+        tbl = doc.add_table(rows=6, cols=3)
+        tbl.style = "Light Grid Accent 1"
+        h = tbl.rows[0].cells
+        h[0].text = "축"; h[1].text = "점수"; h[2].text = "코멘트"
+        
+        axis_kr = {
+            "specificity": "구체성", "conflict_visibility": "갈등 가시성",
+            "genre_clarity": "장르 명확성", "stakes": "판돈", "originality": "독창성"
         }
+        for i, (k, kr) in enumerate(axis_kr.items(), 1):
+            sc = scores.get(k, {})
+            r = tbl.rows[i].cells
+            r[0].text = kr
+            r[1].text = f"{sc.get('score', 0)}/10"
+            r[2].text = sc.get("comment", "")
+        
+        doc.add_paragraph()
+        add_para(doc, f"총점: {hk.get('total_score', 0)}/50 — {hk.get('gate_status', '')}", bold=True, size=13)
+        doc.add_paragraph()
+        
+        add_para(doc, "강점", bold=True)
+        for s in hk.get("key_strengths", []):
+            add_para(doc, f"  • {s}")
+        doc.add_paragraph()
+        add_para(doc, "약점", bold=True)
+        for w in hk.get("key_weaknesses", []):
+            add_para(doc, f"  • {w}")
+        doc.add_paragraph()
+        add_para(doc, "보강 제안", bold=True)
+        for s in hk.get("improvement_suggestions", []):
+            add_para(doc, f"  • {s}")
+        doc.add_paragraph()
 
-        for act_num in [1, 2, 3]:
-            act_data = treatment.get(f"act{act_num}")
-            if act_data:
-                kr, en = act_headers[act_num]
-                add_spacer(10)
-                # 막 헤더 (네이비 배경)
-                p_act = doc.add_paragraph()
-                p_act.paragraph_format.space_before = Pt(14)
-                p_act.paragraph_format.space_after = Pt(8)
-                shading = parse_xml(f'<w:shd {nsdecls("w")} w:fill="191970" w:val="clear"/>')
-                p_act.paragraph_format.element.get_or_add_pPr().append(shading)
-                r_act = p_act.add_run(f"  {kr}  ·  {en}")
-                r_act.font.size = Pt(12)
-                r_act.font.bold = True
-                r_act.font.color.rgb = WHITE
+    if state["stage_4_format"]:
+        add_section_header_docx(doc, "4. 포맷 추천", "FORMAT RECOMMENDATION")
+        fm = state["stage_4_format"]
+        fs = fm.get("format_scores", {})
+        
+        tbl = doc.add_table(rows=6, cols=3)
+        tbl.style = "Light Grid Accent 1"
+        h = tbl.rows[0].cells
+        h[0].text = "포맷"; h[1].text = "점수"; h[2].text = "근거"
+        
+        format_kr = {
+            "feature_film": "장편 영화", "ott_series": "OTT 시리즈",
+            "mini_series": "미니시리즈", "short_form": "숏폼 드라마", "web_novel": "웹소설"
+        }
+        for i, (k, kr) in enumerate(format_kr.items(), 1):
+            f = fs.get(k, {})
+            r = tbl.rows[i].cells
+            r[0].text = kr
+            r[1].text = f"{f.get('score', 0)}/10"
+            r[2].text = f.get("reason", "")
+        
+        doc.add_paragraph()
+        primary = fm.get("primary_format_detail", {})
+        add_para(doc, f"▶ 1순위: {primary.get('format_name', '')}", bold=True, size=13)
+        if primary.get("episode_count"):
+            add_para(doc, f"  회차: {primary['episode_count']}")
+        if primary.get("runtime_per_episode"):
+            add_para(doc, f"  회당 분량: {primary['runtime_per_episode']}")
+        doc.add_paragraph()
+        add_para(doc, "IP 빌딩 전략", bold=True)
+        add_para(doc, fm.get("ip_building_strategy", ""))
+        doc.add_paragraph()
 
-                for b in act_data.get("beats", []):
-                    beat_no = b.get("beat_no", "")
-                    beat_name = b.get("beat_name", "")
-                    narrative = b.get("narrative", "")
-                    episode = b.get("episode", "")
-                    event_s = b.get("event_summary", "")
-                    decision_s = b.get("decision_summary", "")
-                    consequence_s = b.get("consequence_summary", "")
-                    b_story = b.get("b_story_beat", "")
-                    cliff = b.get("cliffhanger", "")
-                    villain = b.get("villain_beat", "")
-                    pp = b.get("plant_payoff", "")
+    if state["stage_5_reference"]:
+        add_section_header_docx(doc, "5. 레퍼런스 매핑", "REFERENCE MAPPING")
+        rf = state["stage_5_reference"]
+        for ref in rf.get("references", []):
+            add_para(doc, f"《{ref['title']}》 ({ref.get('year', '')}, {ref.get('country', '')}) - {ref.get('format', '')}", bold=True)
+            add_para(doc, f"  유사 차원: {ref.get('similarity_axis', '')}", italic=True, size=10)
+            add_para(doc, f"  공통점: {ref.get('common_points', '')}")
+            add_para(doc, f"  차별점: {ref.get('differentiation', '')}")
+            doc.add_paragraph()
+        warn = rf.get("lethal_similarity_warning", {})
+        if warn.get("exists"):
+            add_para(doc, "⚠ 치명적 유사작 경고", bold=True)
+            add_para(doc, warn.get("details", ""))
+        else:
+            add_para(doc, "✓ 치명적 유사작 없음 - 안전", bold=True)
+        doc.add_paragraph()
+        add_para(doc, "차별화 요약", bold=True)
+        add_para(doc, rf.get("differentiation_summary", ""))
+        doc.add_paragraph()
+        add_para(doc, "투자자 미팅 답변용", bold=True)
+        add_para(doc, rf.get("investor_pitch_answer", ""))
+        doc.add_paragraph()
 
-                    # 비트 번호 + 에피소드 태그 + 이름
-                    p_beat = doc.add_paragraph()
-                    p_beat.paragraph_format.space_before = Pt(12)
-                    p_beat.paragraph_format.space_after = Pt(4)
-                    if episode:
-                        r_ep = p_beat.add_run(f"[{episode}] ")
-                        r_ep.font.size = Pt(9)
-                        r_ep.font.bold = True
-                        r_ep.font.color.rgb = NAVY
-                    r_num = p_beat.add_run(f"Beat {beat_no}")
-                    r_num.font.size = Pt(10)
-                    r_num.font.bold = True
-                    r_num.font.color.rgb = YELLOW
-                    r_name = p_beat.add_run(f"  {beat_name}")
-                    r_name.font.size = Pt(10)
-                    r_name.font.bold = True
-                    r_name.font.color.rgb = NAVY
+    if state["stage_6_market"]:
+        add_section_header_docx(doc, "6. 시장성 진단", "MARKET DIAGNOSTIC")
+        mk = state["stage_6_market"]
+        
+        dom = mk.get("domestic_market", {})
+        add_para(doc, f"한국 시장 ({'★' * dom.get('stars', 0)})", bold=True, size=13)
+        ta = dom.get("target_audience", {})
+        add_para(doc, f"  타겟: {ta.get('gender', '')} {ta.get('age_range', '')} - {ta.get('psychographic', '')}")
+        add_para(doc, f"  예산: {dom.get('budget_estimate', '')}")
+        add_para(doc, f"  유통: {', '.join(dom.get('distribution', []))}")
+        add_para(doc, f"  IP 확장: {', '.join(dom.get('ip_extension_potential', []))}")
+        doc.add_paragraph()
+        
+        glb = mk.get("global_market", {})
+        add_para(doc, f"글로벌 시장 ({'★' * glb.get('stars', 0)})", bold=True, size=13)
+        add_para(doc, f"  1차 타겟: {glb.get('primary_target_country', '')}")
+        add_para(doc, f"  어필: {glb.get('global_appeal_strength', '')}")
+        add_para(doc, f"  진입경로: {', '.join(glb.get('entry_path', []))}")
+        add_para(doc, f"  약점: {glb.get('weakness', '')}")
+        doc.add_paragraph()
+        
+        ott = mk.get("ott_market", {})
+        add_para(doc, f"OTT 시장 ({'★' * ott.get('stars', 0)})", bold=True, size=13)
+        fc = ott.get("first_choice_platform", {})
+        sc = ott.get("second_choice_platform", {})
+        add_para(doc, f"  1순위: {fc.get('name', '')} - {fc.get('reason', '')}")
+        add_para(doc, f"  2순위: {sc.get('name', '')} - {sc.get('reason', '')}")
+        add_para(doc, f"  최적 회차: {ott.get('optimal_episode_count', '')}")
+        add_para(doc, f"  경쟁: {ott.get('competition_analysis', '')}")
+        doc.add_paragraph()
+        
+        timing = mk.get("timing_fit", {})
+        add_para(doc, f"시기적 적합성 ({'★' * timing.get('score', 0)})", bold=True)
+        add_para(doc, timing.get("reason", ""))
+        doc.add_paragraph()
+        
+        add_para(doc, "위험 신호", bold=True)
+        for r in mk.get("risk_signals", []):
+            add_para(doc, f"  • {r}")
+        doc.add_paragraph()
 
-                    # 사건/선택/결과 요약 블록
-                    meta_parts = []
-                    if event_s:
-                        meta_parts.append(f"사건: {event_s}")
-                    if decision_s:
-                        meta_parts.append(f"선택: {decision_s}")
-                    if consequence_s:
-                        meta_parts.append(f"결과: {consequence_s}")
-                    if b_story:
-                        meta_parts.append(f"B-Story: {b_story}")
-                    if villain:
-                        meta_parts.append(f"빌런: {villain}")
-                    if pp:
-                        meta_parts.append(f"Plant/Payoff: {pp}")
-                    if cliff:
-                        meta_parts.append(f"CLIFFHANGER: {cliff}")
-                    if meta_parts:
-                        p_meta = doc.add_paragraph()
-                        p_meta.paragraph_format.space_before = Pt(2)
-                        p_meta.paragraph_format.space_after = Pt(4)
-                        shading_meta = parse_xml(f'<w:shd {nsdecls("w")} w:fill="EEEEF6" w:val="clear"/>')
-                        p_meta.paragraph_format.element.get_or_add_pPr().append(shading_meta)
-                        r_meta = p_meta.add_run(" | ".join(meta_parts))
-                        r_meta.font.size = Pt(8)
-                        r_meta.font.color.rgb = RGBColor(0x4A, 0x4A, 0x5A)
-                        r_meta.font.italic = True
+    if state["stage_7_verdict"]:
+        add_section_header_docx(doc, "7. 최종 판정", "FINAL VERDICT")
+        vd = state["stage_7_verdict"]
+        
+        verdict = vd.get("final_verdict", "")
+        vp = doc.add_paragraph()
+        vp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = vp.add_run(f"  {verdict}  ")
+        run.font.size = Pt(28)
+        run.font.bold = True
+        if verdict == "GO":
+            run.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
+        elif verdict == "CONDITIONAL":
+            run.font.color.rgb = RGBColor(0xF9, 0xA8, 0x25)
+        else:
+            run.font.color.rgb = RGBColor(0xC6, 0x28, 0x28)
+        doc.add_paragraph()
+        
+        add_para(doc, "판정 사유", bold=True)
+        add_para(doc, vd.get("verdict_reasoning", ""))
+        doc.add_paragraph()
+        
+        if vd.get("conditional_requirements"):
+            add_para(doc, "충족 조건 (CONDITIONAL)", bold=True)
+            for c in vd["conditional_requirements"]:
+                add_para(doc, f"  • {c}")
+            doc.add_paragraph()
+        
+        if vd.get("nogo_alternative"):
+            add_para(doc, "대안 제시 (NOGO)", bold=True)
+            add_para(doc, vd["nogo_alternative"])
+            doc.add_paragraph()
+        
+        add_para(doc, "확정된 핵심 결정", bold=True)
+        for k in vd.get("key_decisions_made", []):
+            add_para(doc, f"  • {k}")
+        doc.add_paragraph()
+        
+        add_para(doc, "Creator Engine에서 결정해야 할 질문", bold=True)
+        for q in vd.get("pending_decisions_for_creator", []):
+            add_para(doc, f"  • {q}")
+        doc.add_paragraph()
+        
+        add_section_header_docx(doc, "임원 요약", "EXECUTIVE SUMMARY")
+        add_para(doc, vd.get("executive_summary", ""))
+        doc.add_paragraph()
+        
+        add_section_header_docx(doc, "LOCKED 시드 패키지", "LOCKED SEED PACKAGE")
+        add_para(doc, "Creator Engine 입력용 데이터 ─ 이 항목들은 Creator Engine에서 변경하지 않는다.", italic=True, size=10)
+        doc.add_paragraph()
+        
+        seed = vd.get("locked_seed_package", {})
+        add_para(doc, f"Project ID: {seed.get('project_id', '')}", bold=True, size=11)
+        add_para(doc, f"제목 (KR): {seed.get('title_kr', '')}")
+        add_para(doc, f"제목 (EN): {seed.get('title_en', '')}")
+        doc.add_paragraph()
+        
+        add_para(doc, "LOCKED LOGLINE", bold=True)
+        add_para(doc, seed.get("locked_logline", ""))
+        doc.add_paragraph()
+        
+        add_para(doc, "LOCKED GENRE", bold=True)
+        gn = seed.get("locked_genre", {})
+        add_para(doc, f"  Primary: {gn.get('primary', '')}")
+        add_para(doc, f"  Secondary: {gn.get('secondary', '')}")
+        if gn.get("tertiary"):
+            add_para(doc, f"  Tertiary: {gn['tertiary']}")
+        doc.add_paragraph()
+        
+        add_para(doc, "LOCKED FORMAT", bold=True)
+        ft = seed.get("locked_format", {})
+        add_para(doc, f"  Primary: {ft.get('primary', '')}")
+        if ft.get("confidence"):
+            add_para(doc, f"  Confidence: {ft['confidence']}")
+        if ft.get("episode_count"):
+            add_para(doc, f"  Episodes: {ft['episode_count']}")
+        if ft.get("runtime"):
+            add_para(doc, f"  Runtime: {ft['runtime']}")
+        if ft.get("platform"):
+            add_para(doc, f"  Platform: {ft['platform']}")
+        add_para(doc, f"  IP Strategy: {ft.get('ip_strategy', '')}")
+        doc.add_paragraph()
+        
+        add_para(doc, "LOCKED TARGET", bold=True)
+        tg = seed.get("locked_target", {})
+        add_para(doc, f"  Domestic: {tg.get('domestic', '')}")
+        add_para(doc, f"  Global: {tg.get('global', '')}")
+        doc.add_paragraph()
+        
+        add_para(doc, "LOCKED THEME", bold=True)
+        th = seed.get("locked_theme", {})
+        add_para(doc, f"  Surface: {th.get('surface', '')}")
+        add_para(doc, f"  Deep: {th.get('deep', '')}")
+        doc.add_paragraph()
+        
+        add_para(doc, "LOCKED REFERENCES", bold=True)
+        for r in seed.get("locked_references", []):
+            add_para(doc, f"  • {r}")
+        doc.add_paragraph()
+        
+        add_para(doc, f"Hook Score: {seed.get('locked_hook_score', '')}/50", bold=True)
+        ms = seed.get("locked_market_stars", {})
+        add_para(doc, f"Market Stars: 한국 {'★' * ms.get('domestic', 0)} / 글로벌 {'★' * ms.get('global', 0)} / OTT {'★' * ms.get('ott', 0)}")
+        add_para(doc, f"Distribution Priority: {seed.get('locked_distribution_priority', '')}")
+        doc.add_paragraph()
+        
+        add_para(doc, "Creator Engine 진행 시 다뤄야 할 위험", bold=True)
+        for risk in seed.get("locked_risks_to_address", []):
+            add_para(doc, f"  • {risk}")
 
-                    # 줄글 narrative
-                    if narrative:
-                        p_n = doc.add_paragraph()
-                        p_n.paragraph_format.line_spacing = 1.6
-                        p_n.paragraph_format.first_line_indent = Cm(0.5)
-                        r_n = p_n.add_run(narrative)
-                        r_n.font.size = Pt(10)
-                        r_n.font.color.rgb = BLACK
+        # ════════════════════════════════════════════════════════
+        # v1.1 — Creator Engine v2.5.2 정합 5개 신규 LOCKED 영역
+        # ════════════════════════════════════════════════════════
+        doc.add_paragraph()
+        add_section_header_docx(
+            doc, "v1.1 신규 LOCKED 영역",
+            "CREATOR ENGINE v2.5.2 ABSORPTION KEYS"
+        )
+        add_para(
+            doc,
+            "Creator Engine v2.5.2가 작품 본질로 절대 보존하는 5개 영역. "
+            "「오랜만에」 검증에서 발견된 핵심 모티프 휘발(61%)을 차단하기 위해 도입.",
+            italic=True, size=10,
+        )
+        doc.add_paragraph()
 
-        # 투자자용 요약
-        meta = treatment.get("meta", {})
-        if meta.get("investor_summary"):
-            doc.add_page_break()
-            add_yellow_header("투자자용 요약", "INVESTOR SUMMARY")
-            add_body(meta["investor_summary"])
+        # ① locked_core_decisions
+        core_decisions = seed.get("locked_core_decisions", []) or []
+        add_para(doc, f"① 확정된 핵심 결정 (locked_core_decisions) — {len(core_decisions)}건", bold=True)
+        if not core_decisions:
+            add_para(doc, "  (이 작품에는 별도로 LOCK된 핵심 결정이 없음 — 빈 배열)", italic=True, size=10)
+        else:
+            for d in core_decisions:
+                if isinstance(d, dict):
+                    cat = d.get("category", "")
+                    rule = d.get("rule", "") or d.get("decision", "")
+                    rationale = d.get("rationale", "")
+                    if cat and rule:
+                        add_para(doc, f"  • [{cat}] {rule}")
+                    elif rule:
+                        add_para(doc, f"  • {rule}")
+                    if rationale:
+                        add_para(doc, f"      근거: {rationale}", italic=True, size=10)
+                elif isinstance(d, str):
+                    add_para(doc, f"  • {d}")
+        doc.add_paragraph()
 
-        # 감독 포인트
-        if meta.get("director_notes"):
-            add_spacer(8)
-            add_sub_header("감독 포인트")
-            for i, note in enumerate(meta["director_notes"], 1):
-                add_labeled(f"Point {i}", note)
-
-    doc.add_page_break()
-
-    # ═══════════════════════════════════
-    #  SECTION 5: 점수 DEVELOPMENT SCORE
-    # ═══════════════════════════════════
-    add_yellow_header("개발 적합도", "DEVELOPMENT FIT SCORE")
-
-    cg = project.get("core_gate", {})
-    fa = cg.get("five_axis_scores", {})
-    if fa:
-        final = fa.get("final_score", "")
-        verdict = fa.get("verdict", "")
-
-        # 큰 점수
-        p_score = doc.add_paragraph()
-        p_score.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p_score.paragraph_format.space_before = Pt(12)
-        r_score = p_score.add_run(str(final))
-        r_score.font.size = Pt(36)
-        r_score.font.bold = True
-        r_score.font.color.rgb = NAVY
-
-        p_verdict = doc.add_paragraph()
-        p_verdict.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r_v = p_verdict.add_run(str(verdict))
-        r_v.font.size = Pt(11)
-        r_v.font.color.rgb = DIM
-
-        # 5축 상세 (테이블)
-        axes = ["originality","market_fit","character","structure","theme"]
-        axis_kr = {"originality":"독창성","market_fit":"시장성","character":"캐릭터","structure":"구조","theme":"테마"}
-        scores_exist = any(fa.get(a) for a in axes)
-        if scores_exist:
-            add_spacer(8)
-            table = doc.add_table(rows=1, cols=3)
-            table.alignment = WD_TABLE_ALIGNMENT.CENTER
-            hdr = table.rows[0].cells
-            for i, text in enumerate(["항목", "점수", "상태"]):
-                hdr[i].text = text
-                for p in hdr[i].paragraphs:
-                    for r in p.runs:
-                        r.font.bold = True
-                        r.font.size = Pt(9)
-                        r.font.color.rgb = NAVY
-            for a in axes:
-                sc = fa.get(a, "")
-                if sc:
-                    row = table.add_row().cells
-                    row[0].text = axis_kr.get(a, a)
-                    row[1].text = str(sc)
-                    sc_val = float(sc) if sc else 0
-                    row[2].text = "●" if sc_val >= 7 else "◐" if sc_val >= 5 else "○"
-
-    # ═══════════════════════════════════
-    #  SECTION 6: 톤 문서 TONE DOCUMENT
-    # ═══════════════════════════════════
-    tone_doc = project.get("tone_doc", {})
-    if tone_doc:
-        doc.add_page_break()
-        add_yellow_header("톤 & 연출 문서", "TONE DOCUMENT")
-
-        vs = tone_doc.get("visual_style", {})
-        if vs:
-            add_sub_header("비주얼 스타일")
-            for label, key in [("카메라 철학","camera_philosophy"),("색감 팔레트","color_palette"),("조명 규칙","lighting_rule"),("시그니처 쇼트","signature_shot")]:
-                add_labeled(label, vs.get(key, ""))
-
-        pc = tone_doc.get("pacing", {})
-        if pc:
-            add_sub_header("페이싱")
-            for label, key in [("전체","overall"),("1막","act1_tempo"),("2막","act2_tempo"),("3막","act3_tempo"),("대사 비율","dialogue_density")]:
-                add_labeled(label, pc.get(key, ""))
-
-        dr = tone_doc.get("dialogue_rules", {})
-        if dr:
-            add_sub_header("대사 규칙")
-            for label, key in [("전체 톤","overall_tone"),("서브텍스트","subtext_rule"),("침묵 활용","silence_usage")]:
-                add_labeled(label, dr.get(key, ""))
-            fp = dr.get("forbidden_phrases", [])
-            if fp:
-                fp_list = fp if isinstance(fp, list) else [fp]
-                for f in fp_list:
-                    add_labeled("금지", f)
-
-        mt = tone_doc.get("motifs", {})
-        if mt:
-            add_sub_header("모티프")
-            for label, key in [("반복 소품","recurring_objects"),("반복 장소","recurring_locations")]:
-                val = mt.get(key, [])
-                if val:
-                    items = val if isinstance(val, list) else [val]
-                    add_labeled(label, " · ".join(items))
-            add_labeled("날씨/계절", mt.get("weather_mood",""))
-
-        forbidden = tone_doc.get("forbidden", [])
-        if forbidden:
-            add_sub_header("금기 사항")
-            fb_list = forbidden if isinstance(forbidden, list) else [forbidden]
-            for f in fb_list:
-                add_labeled("🚫", f)
-
-        refs = tone_doc.get("reference_films", [])
-        if refs:
-            add_sub_header("참고 작품")
-            for ref in refs:
-                if isinstance(ref, dict):
-                    add_labeled(ref.get("title",""), ref.get("reason",""))
+        # ② locked_music_rules
+        music_rules = seed.get("locked_music_rules", {}) or {}
+        add_para(
+            doc,
+            f"② 음악 사용 규약 (locked_music_rules) — {'있음' if music_rules else '없음 (빈 객체)'}",
+            bold=True,
+        )
+        if not music_rules:
+            add_para(doc, "  (이 작품에는 음악 사용 규약이 없음 — 액션·스릴러·호러에서 자주 발생)", italic=True, size=10)
+        elif isinstance(music_rules, dict):
+            for k, v in music_rules.items():
+                if isinstance(v, list):
+                    add_para(doc, f"  • [{k}]")
+                    for item in v:
+                        add_para(doc, f"      - {item}")
                 else:
-                    add_body(str(ref))
+                    add_para(doc, f"  • [{k}] {v}")
+        elif isinstance(music_rules, list):
+            for r in music_rules:
+                add_para(doc, f"  • {r}")
+        else:
+            add_para(doc, f"  • {music_rules}")
+        doc.add_paragraph()
 
-        wi = tone_doc.get("writer_instruction", "")
-        if wi:
-            add_spacer(8)
-            add_sub_header("Writer Engine 최종 지시")
-            add_body(wi)
+        # ③ locked_visual_motifs
+        visual_motifs = seed.get("locked_visual_motifs", []) or []
+        add_para(doc, f"③ 시각 모티프 (locked_visual_motifs) — {len(visual_motifs)}건", bold=True)
+        if not visual_motifs:
+            add_para(doc, "  (이 작품에는 LOCK된 시각 모티프가 없음 — 빈 배열)", italic=True, size=10)
+        else:
+            for m in visual_motifs:
+                if isinstance(m, dict):
+                    motif = m.get("motif", "") or m.get("name", "")
+                    function = m.get("function", "") or m.get("role", "")
+                    if motif and function:
+                        add_para(doc, f"  • {motif} → {function}")
+                    elif motif:
+                        add_para(doc, f"  • {motif}")
+                elif isinstance(m, str):
+                    add_para(doc, f"  • {m}")
+        doc.add_paragraph()
 
-    # ═══════════════════════════════════
-    #  FOOTER
-    # ═══════════════════════════════════
-    doc.add_paragraph("")
-    p_line2 = doc.add_paragraph()
-    p_line2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r_line2 = p_line2.add_run("━" * 20)
-    r_line2.font.size = Pt(8)
-    r_line2.font.color.rgb = YELLOW
+        # ④ locked_ending_form
+        ending_form = seed.get("locked_ending_form", {}) or {}
+        add_para(
+            doc,
+            f"④ 결말 형식 (locked_ending_form) — {'LOCK됨' if ending_form else '미확정 (빈 객체)'}",
+            bold=True,
+        )
+        if not ending_form:
+            add_para(doc, "  (결말 형식이 LOCK되지 않음 — Creator Engine이 결정)", italic=True, size=10)
+        elif isinstance(ending_form, dict):
+            if ending_form.get("type"):
+                add_para(doc, f"  • 결말 유형: {ending_form['type']}")
+            if ending_form.get("emotional_resolution"):
+                add_para(doc, f"  • 정서적 해소: {ending_form['emotional_resolution']}")
+            if ending_form.get("final_image"):
+                add_para(doc, f"  • 마지막 이미지: {ending_form['final_image']}")
+            if ending_form.get("forbidden"):
+                add_para(doc, f"  • 금지 패턴: {ending_form['forbidden']}")
+        else:
+            add_para(doc, f"  • {ending_form}")
+        doc.add_paragraph()
 
+        # ⑤ locked_creator_questions
+        creator_questions = seed.get("locked_creator_questions", []) or []
+        add_para(
+            doc,
+            f"⑤ Creator Engine 결정 의제 (locked_creator_questions) — {len(creator_questions)}건",
+            bold=True,
+        )
+        if not creator_questions:
+            add_para(doc, "  (Creator Engine이 답할 의제가 없음 — 빈 배열)", italic=True, size=10)
+        else:
+            for q in creator_questions:
+                if isinstance(q, dict):
+                    question = q.get("question", "")
+                    options = q.get("options", []) or []
+                    importance = q.get("importance", "")
+                    line = f"  • {question}"
+                    if importance:
+                        line += f"  [중요도: {importance.upper()}]"
+                    add_para(doc, line)
+                    if options:
+                        add_para(doc, f"      후보: {' / '.join(str(o) for o in options)}", italic=True, size=10)
+                elif isinstance(q, str):
+                    add_para(doc, f"  • {q}")
+
+    doc.add_paragraph()
+    doc.add_paragraph()
     footer = doc.add_paragraph()
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r_f1 = footer.add_run("© 2026 BLUE JEANS PICTURES\n")
-    r_f1.font.size = Pt(8)
-    r_f1.font.color.rgb = DIM
-    r_f2 = footer.add_run(f"Creator Engine {ENGINE_VERSION}")
-    r_f2.font.size = Pt(7)
-    r_f2.font.color.rgb = DIM
+    run = footer.add_run(f"© 2026 BLUE JEANS PICTURES · Idea Engine {ENGINE_VERSION}")
+    run.font.size = Pt(9)
+    run.font.italic = True
+    run.font.color.rgb = RGBColor(0x6B, 0x6B, 0x7B)
 
-    # Save to buffer
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
 
-# ═══════════════════════════════════════════════════
-#  UI 렌더링
-# ═══════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# v2.3 — 포맷 구조화 · 인계 메타데이터
+# Creator Engine v2.7.2 업그레이드 요청서(2026-08-03) 주문 2·3·6 대응
+# ═══════════════════════════════════════════════════════════
 
-# ─── 공통 헤더 ───
+# Creator Engine v2.7.2 STEP 1 포맷 selectbox와 동일한 9개 열거값
+FORMAT_ENUM = ["미지정", "영화", "시리즈", "미니시리즈", "웹툰", "웹소설",
+               "숏폼", "다큐멘터리", "애니메이션"]
+
+# 자유 서술 → 열거값 정규화. 긴 표현이 먼저 걸리도록 순서가 중요하다.
+# ("미니시리즈"가 "시리즈"보다 앞에 있어야 미니시리즈가 시리즈로 흡수되지 않는다.)
+_FORMAT_ALIASES = [
+    ("미니시리즈", "미니시리즈"),
+    ("미니 시리즈", "미니시리즈"),
+    ("애니메이션", "애니메이션"),
+    ("다큐멘터리", "다큐멘터리"),
+    ("다큐", "다큐멘터리"),
+    ("웹소설", "웹소설"),
+    ("노벨", "웹소설"),
+    ("웹툰", "웹툰"),
+    ("숏폼", "숏폼"),
+    ("쇼트폼", "숏폼"),
+    ("short", "숏폼"),
+    ("시리즈", "시리즈"),
+    ("영화", "영화"),
+    ("feature", "영화"),
+]
+
+_CONFIDENCE_ENUM = ["확정", "잠정", "미정"]
+
+
+def normalize_format_primary(raw: Any) -> str:
+    """자유 서술 포맷 표현을 Creator Engine 열거값 1개로 정규화.
+
+    Creator Engine은 시드의 포맷 문자열을 selectbox 기본값으로 매칭한다.
+    "OTT 시리즈 (시즌제)" 같은 자유 서술이 넘어가면 매칭이 어긋나므로
+    Idea Engine 쪽에서 정확한 열거값으로 확정해 넘긴다.
+    """
+    t = str(raw or "").strip()
+    if not t:
+        return "미지정"
+    if t in FORMAT_ENUM:
+        return t
+    low = t.lower()
+    for alias, canon in _FORMAT_ALIASES:
+        if alias in t or alias in low:
+            return canon
+    return "미지정"
+
+
+def normalize_locked_format(raw_ft: Any) -> Dict[str, Any]:
+    """locked_format을 Creator Engine 요청 스키마로 정규화.
+
+    - primary: 9개 열거값 중 하나로 확정
+    - confidence: 확정 / 잠정 / 미정
+    - episode_count(현행) + episodes(요청 필드명) 병행 출력
+    - platform / rationale 신설. 값이 없어도 키를 생략하지 않고 빈 문자열로 명시
+    - ip_strategy는 기존 필드이므로 삭제하지 않고 유지
+
+    primary와 confidence는 서로 잠근다. 하나가 '미지정/미정'이면
+    다른 하나도 그렇게 맞춘다. 확신 없는 포맷을 배정하지 않기 위함이다.
+    """
+    ft = raw_ft if isinstance(raw_ft, dict) else {}
+
+    primary = normalize_format_primary(ft.get("primary", ""))
+
+    conf = str(ft.get("confidence", "") or "").strip()
+    if conf not in _CONFIDENCE_ENUM:
+        if "확정" in conf:
+            conf = "확정"
+        elif "잠정" in conf:
+            conf = "잠정"
+        elif "미정" in conf or "미지정" in conf:
+            conf = "미정"
+        else:
+            conf = ""
+
+    # 상호 잠금 — 확신 없으면 배정하지 않는다
+    if primary == "미지정":
+        conf = "미정"
+    elif conf == "미정":
+        primary = "미지정"
+    elif not conf:
+        conf = "잠정"   # 구버전 시드 등 확신도 정보 부재 시 보수적으로 잠정
+
+    ep = str(ft.get("episode_count", "") or ft.get("episodes", "") or "").strip()
+    rt = str(ft.get("runtime", "") or "").strip()
+    pf = str(ft.get("platform", "") or "").strip()
+
+    if primary == "미지정":
+        ep, rt, pf = "", "", ""
+
+    return {
+        "primary": primary,
+        "confidence": conf,
+        "episode_count": ep,          # 현행 필드명 — Creator Engine이 실제로 읽는 키
+        "episodes": ep,               # 요청서 필드명 — 병행 출력
+        "runtime": rt,
+        "platform": pf,
+        "rationale": str(ft.get("rationale", "") or "").strip(),
+        "ip_strategy": str(ft.get("ip_strategy", "") or "").strip(),
+    }
+
+
+def build_locked_source(state: Dict[str, Any], seed: Dict[str, Any]) -> Dict[str, str]:
+    """각 LOCKED 항목의 출처를 표시 (주문 6).
+
+    writer                  : 작가가 STEP 1에서 직접 입력·선택한 것
+    engine_writer_selected  : 엔진이 후보를 만들고 작가가 채택한 것
+    engine                  : 엔진이 진단 결과로 생성한 것
+
+    Creator Engine은 현재 전 항목을 작가 입력으로 간주해 동일 강도로 보존한다.
+    이 필드가 있으면 보존 강도를 차등화할 수 있다.
+    """
+    s1 = state.get("stage_1_input", {}) or {}
+    src: Dict[str, str] = {k: "engine" for k in seed.keys()}
+
+    if "title_kr" in src:
+        src["title_kr"] = "writer"
+    if "locked_logline" in src:
+        # Stage 2에서 엔진이 3안을 만들고 작가가 라디오로 채택
+        src["locked_logline"] = "engine_writer_selected"
+
+    g = str(s1.get("genre", "") or "").strip()
+    if "locked_genre" in src and g and g not in ("장르 미정", "미지정"):
+        src["locked_genre"] = "writer"
+
+    f = str(s1.get("format", "") or "").strip()
+    if "locked_format" in src and f and not f.startswith("미정"):
+        src["locked_format"] = "writer"
+
+    if "locked_target" in src and str(s1.get("target_market", "") or "").strip():
+        src["locked_target"] = "writer"
+
+    return src
+
+
+def build_seed_json(state: Dict[str, Any]) -> str:
+    if not state.get("stage_7_verdict"):
+        return "{}"
+    seed = state["stage_7_verdict"].get("locked_seed_package", {})
+
+    # ─── v1.1: Creator Engine v2.5.2 정합 5개 신규 키 빈 값 보장 ───
+    # 작품 특성상 해당 없는 영역도 키 자체는 명시 출력 (Creator Engine이
+    # "Idea Engine이 의식적으로 비웠다"는 신호로 해석)
+    seed.setdefault("locked_core_decisions", [])
+    seed.setdefault("locked_music_rules", {})
+    seed.setdefault("locked_visual_motifs", [])
+    seed.setdefault("locked_ending_form", {})
+    seed.setdefault("locked_creator_questions", [])
+
+    # ─── v1.2: Story Core 5원칙 + Hook & Punch 발굴 4개 신규 키 ───
+    seed.setdefault("locked_empathy_anchor", {})
+    seed.setdefault("locked_hook_signature", {})
+    seed.setdefault("locked_punch_scene", {})
+    seed.setdefault("locked_ending_promise", {})
+
+    # ─── v1.3: 장르 + 시장 좌표 2개 신규 키 ───
+    seed.setdefault("locked_genre_primary", {})
+    seed.setdefault("locked_market_position", {})
+
+    # ─── v2.3: 포맷 구조화 단일화 (주문 2·3) ───
+    # Stage 4가 판정한 확신도를 승계. 시드에 없으면 Stage 4 원본에서 끌어온다.
+    _ft_raw = seed.get("locked_format", {})
+    if isinstance(_ft_raw, dict) and not _ft_raw.get("confidence"):
+        _s4 = state.get("stage_4_format", {}) or {}
+        if _s4.get("format_confidence"):
+            _ft_raw = dict(_ft_raw)
+            _ft_raw["confidence"] = _s4.get("format_confidence")
+        _s4d = _s4.get("primary_format_detail", {}) or {}
+        if isinstance(_s4d, dict):
+            _ft_raw = dict(_ft_raw)
+            _ft_raw.setdefault("platform", _s4d.get("platform", ""))
+            _ft_raw.setdefault("rationale", _s4d.get("rationale", ""))
+    seed["locked_format"] = normalize_locked_format(_ft_raw)
+
+    creator_input = {
+        "_idea_engine_meta": {
+            "version": ENGINE_VERSION,
+            "idea_engine_version": f"{ENGINE_VERSION} · {ENGINE_PATCH_LEVEL}",
+            "patch": ENGINE_PATCH_LEVEL,
+            "generated_at": datetime.now().isoformat(),
+            "project_id": seed.get("project_id", ""),
+            "verdict": state["stage_7_verdict"].get("final_verdict", ""),
+            "hook_score": seed.get("locked_hook_score", 0),
+            "format_confidence": seed["locked_format"].get("confidence", ""),
+            "reality_precheck": {
+                "performed": False,
+                "verdict": None,
+                "issues_found": 0,
+                "note": (
+                    "제도 사실성 사전 점검(Reality Pre-Check)은 Idea Engine v2.4에서 "
+                    "신설 예정입니다. 이 시드는 상류 사실성 점검을 거치지 않았으므로 "
+                    "Creator Engine의 Reality Gate를 반드시 실행해 주십시오."
+                ),
+            },
+            "locked_source": build_locked_source(state, seed),
+        },
+        "title": seed.get("title_kr", ""),
+        "raw_idea": seed.get("locked_logline", ""),
+        "genre": seed.get("locked_genre", {}).get("primary", ""),
+        "target_market": seed.get("locked_target", {}).get("domestic", ""),
+        "format": seed["locked_format"].get("primary", ""),
+        "locked_seed": seed,
+        "executive_summary": state["stage_7_verdict"].get("executive_summary", ""),
+        "pending_decisions": state["stage_7_verdict"].get("pending_decisions_for_creator", []),
+    }
+    return json.dumps(creator_input, ensure_ascii=False, indent=2)
+
+
+# ═══════════════════════════════════════════════════════════
+# HEADER (Writer Engine 양식 동일)
+# ═══════════════════════════════════════════════════════════
 st.markdown(
-    '<div style="text-align:center;padding:2rem 0 0 0">'
+    '<div style="text-align:center;padding:1rem 0 0 0">'
     '<div class="header">B L U E &nbsp; J E A N S &nbsp; P I C T U R E S</div>'
-    '<div class="brand-title">CREATOR ENGINE</div>'
+    '<div class="brand-title">IDEA ENGINE</div>'
     '<div class="sub">Y O U N G &nbsp; · &nbsp; V I N T A G E &nbsp; · &nbsp; F R E E &nbsp; · &nbsp; I N N O V A T I V E</div>'
     '</div>',
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
-# ─── 뒤로가기 ───
-if st.session_state.view in ("project", "core", "char_bible", "structure", "scene_design", "treatment", "tone_doc") and st.session_state.cur:
-    if st.session_state.view == "tone_doc":
-        col_nav1, col_nav2 = st.columns(2)
-        with col_nav1:
-            if st.button("← 프로젝트 목록"):
-                st.session_state.view = "home"
+
+# ─────────────────────────────────────
+# Stepper
+# ─────────────────────────────────────
+def render_stepper(current: int):
+    stages_meta = [
+        (1, "아이디어"), (2, "로그라인"), (3, "Hook"),
+        (4, "Format"), (5, "Reference"), (6, "Market"), (7, "최종 판정")
+    ]
+    completed_keys = {
+        1: "stage_1_input", 2: "stage_2_logline", 3: "stage_3_hook",
+        4: "stage_4_format", 5: "stage_5_reference", 6: "stage_6_market",
+        7: "stage_7_verdict"
+    }
+    
+    html = '<div class="stepper">'
+    for num, name in stages_meta:
+        completed = bool(st.session_state.get(completed_keys[num]))
+        if num == current:
+            cls = "step active"
+            label_num = f"<span class='num'>{num}</span>"
+        elif completed:
+            cls = "step done"
+            label_num = "<span class='num'>✓</span>"
+        else:
+            cls = "step"
+            label_num = f"<span class='num'>{num}</span>"
+        html += f'<div class="{cls}">{label_num}{name}</div>'
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def section_header(kr: str, en: str):
+    st.markdown(
+        f'<div class="section-header">{kr} <span class="en">{en}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def small_meta(text: str):
+    st.markdown(f'<div class="small-meta">{text}</div>', unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────
+# STAGE PAGES
+# ─────────────────────────────────────
+def page_stage_1():
+    section_header("📥 STEP 1 · 아이디어 입력", "FROM RAW IDEA")
+    small_meta("모호한 아이디어 한 줄부터 한 단락까지 자유롭게 입력하세요. Idea Engine이 정제하여 Creator Engine이 받아먹을 수 있는 LOCKED 시드 패키지로 변환합니다.")
+
+    # ── 이전 진행 상태 JSON 복원 위젯 ──
+    render_progress_load_widget()
+
+    with st.form("s1"):
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            title = st.text_input("프로젝트 제목 (가제)", placeholder="예: 만물트럭 탐정")
+        with c2:
+            genre = st.selectbox(
+                "장르",
+                ["미지정", "범죄/스릴러", "드라마", "액션", "로맨스", "코미디",
+                 "호러/공포", "SF", "판타지", "코지 미스터리", "느와르", "사회파", "직접 입력"]
+            )
+            if genre == "직접 입력":
+                genre = st.text_input("장르 직접 입력", key="genre_direct")
+        
+        c3, c4 = st.columns(2)
+        with c3:
+            target_market = st.selectbox(
+                "타겟 시장",
+                [
+                    "한국 + 글로벌",
+                    "한국 (국내)",
+                    "일본 (인디·공동제작·리메이크 트랙)",
+                    "인도네시아 (JAFF 트랙)",
+                    "인도네시아 + 한국 OTT (Netflix SEA)",
+                    "한국 + 일본 공동제작",
+                    "글로벌 (해외)",
+                    "직접 입력",
+                ],
+                help="Market Lens가 자동 적용됩니다. 일본은 인디·공동제작·리메이크 3트랙만 진입 가능 (외 0점 처리)."
+            )
+            if target_market == "직접 입력":
+                target_market = st.text_input("타겟 시장 직접 입력", key="market_direct")
+        with c4:
+            format_pref = st.selectbox(
+                "선호 포맷",
+                ["미정 (Idea Engine이 추천)", "장편 영화", "OTT 시리즈", "미니시리즈",
+                 "숏폼 드라마", "웹소설", "웹툰"]
+            )
+        
+        raw_idea = st.text_area(
+            "원본 아이디어 (필수)",
+            height=220,
+            placeholder=(
+                "예시:\n"
+                "만물트럭(한국) - 이동편의점(일본) 결합\n"
+                "만물트럭 탐정 — 셜록홈즈 탐정물\n"
+                "고령화된 마을을 돌아다니며 사건 해결\n"
+                "추리소설 광이었던 주인공이 깨어나보니 만물트럭 운전사가 되어있었다\n"
+                "1. 사라진 시체 / 2. 독극물 살인사건 / 3. 아무도 죽이지 않았다"
+            ),
+        )
+        
+        submitted = st.form_submit_button("진단 시작 →", type="primary", use_container_width=True)
+        
+        if submitted:
+            if not title.strip() or not raw_idea.strip():
+                st.error("제목과 원본 아이디어는 필수입니다.")
+            else:
+                st.session_state["stage_1_input"] = {
+                    "title": title.strip(),
+                    "genre": genre if genre != "미지정" else "장르 미정",
+                    "target_market": target_market,
+                    "format": format_pref,
+                    "raw_idea": raw_idea.strip(),
+                }
+                st.session_state["current_stage"] = 2
                 st.rerun()
-        with col_nav2:
-            if st.button("← Treatment"):
-                st.session_state.view = "treatment"
-                st.rerun()
-    elif st.session_state.view == "treatment":
-        col_nav1, col_nav2 = st.columns(2)
-        with col_nav1:
-            if st.button("← 프로젝트 목록"):
-                st.session_state.view = "home"
-                st.rerun()
-        with col_nav2:
-            if st.button("← Scene Design"):
-                st.session_state.view = "scene_design"
-                st.rerun()
-    elif st.session_state.view == "scene_design":
-        col_nav1, col_nav2 = st.columns(2)
-        with col_nav1:
-            if st.button("← 프로젝트 목록"):
-                st.session_state.view = "home"
-                st.rerun()
-        with col_nav2:
-            if st.button("← Structure"):
-                st.session_state.view = "structure"
-                st.rerun()
-    elif st.session_state.view == "structure":
-        col_nav1, col_nav2 = st.columns(2)
-        with col_nav1:
-            if st.button("← 프로젝트 목록"):
-                st.session_state.view = "home"
-                st.rerun()
-        with col_nav2:
-            if st.button("← Character Bible"):
-                st.session_state.view = "char_bible"
-                st.rerun()
-    elif st.session_state.view == "char_bible":
-        col_nav1, col_nav2 = st.columns(2)
-        with col_nav1:
-            if st.button("← 프로젝트 목록"):
-                st.session_state.view = "home"
-                st.rerun()
-        with col_nav2:
-            if st.button("← Core Build"):
-                st.session_state.view = "core"
-                st.rerun()
-    elif st.session_state.view == "core":
-        col_nav1, col_nav2 = st.columns(2)
-        with col_nav1:
-            if st.button("← 프로젝트 목록"):
-                st.session_state.view = "home"
-                st.rerun()
-        with col_nav2:
-            if st.button("← Brainstorm"):
-                st.session_state.view = "project"
+
+
+def page_stage_2():
+    section_header("✍ STEP 2 · 로그라인 정제", "REFINE TO STANDARD")
+    small_meta("원본 아이디어를 산업 표준 로그라인 3개 변형으로 정제합니다. Sonnet이 작성합니다.")
+    
+    inp = st.session_state["stage_1_input"]
+    
+    if not st.session_state.get("stage_2_logline"):
+        if st.button("🪄 로그라인 정제 실행", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            if not client:
+                st.warning("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+                return
+            with st.spinner("Sonnet이 로그라인 3개 변형 작성 중..."):
+                prompt_text = P.LOGLINE_REFINE_PROMPT.format(**inp)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패. 다시 시도해주세요.")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                    return
+                st.session_state["stage_2_logline"] = result
                 st.rerun()
     else:
-        if st.button("← 프로젝트 목록"):
-            st.session_state.view = "home"
-            st.rerun()
-
-
-# ═══════════════════════════════════════════════════
-#  HOME
-# ═══════════════════════════════════════════════════
-if st.session_state.view == "home":
-
-    # ═══════════════════════════════════════════════════
-    # ★ v2.4.0: Idea Engine 시드 업로드 (선택)
-    # ═══════════════════════════════════════════════════
-    # Idea Engine v1.0에서 생성한 LOCKED 시드 JSON을 업로드하면
-    # 아래 입력 필드(제목·아이디어·장르·시장·포맷·LOCKED)가 자동으로 채워지고,
-    # 시드 데이터(레퍼런스·로그라인·테마)가 v2.4 시대극 자동 감지에 활용됩니다.
-    with st.expander("🔑 Idea Engine 시드 업로드 (선택)", expanded=False):
-        st.caption(
-            "Idea Engine에서 생성한 LOCKED 시드 JSON을 업로드하면 "
-            "아래 새 프로젝트 입력 필드가 자동으로 채워집니다. "
-            "(이 단계는 선택입니다 — 직접 입력하셔도 됩니다.)"
+        ll = st.session_state["stage_2_logline"]
+        for v in ll.get("logline_variants", []):
+            st.markdown(f"**[{v['variant']}안 — {v['label']}]**")
+            st.markdown(f"<div class='callout'>{v['logline']}</div>", unsafe_allow_html=True)
+            cs, cw = st.columns(2)
+            with cs:
+                st.caption(f"✓ 강점: {v['strength']}")
+            with cw:
+                st.caption(f"✗ 약점: {v['weakness']}")
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        
+        st.success(f"**▶ 추천: {ll.get('recommended', '')}안** — {ll.get('recommendation_reason', '')}")
+        st.markdown("---")
+        st.markdown("**채택할 로그라인을 선택하세요**")
+        
+        options = {f"{v['variant']}안 - {v['label']}": v['logline']
+                   for v in ll.get("logline_variants", [])}
+        recommended_key = None
+        for k in options:
+            if k.startswith(ll.get("recommended", "A")):
+                recommended_key = k
+                break
+        
+        choice = st.radio(
+            "로그라인 선택",
+            list(options.keys()),
+            index=list(options.keys()).index(recommended_key) if recommended_key else 0,
+            label_visibility="collapsed"
         )
+        st.session_state["selected_logline"] = options[choice]
+        
+        cb, cr, cn = st.columns([1, 1, 2])
+        with cb:
+            if st.button("← 이전"):
+                st.session_state["current_stage"] = 1
+                st.rerun()
+        with cr:
+            if st.button("재실행"):
+                st.session_state["stage_2_logline"] = None
+                st.rerun()
+        with cn:
+            if st.button("Hook 진단으로 →", type="primary", use_container_width=True):
+                st.session_state["current_stage"] = 3
+                st.rerun()
 
-        idea_seed_file = st.file_uploader(
-            "Idea Engine JSON 파일",
-            type=["json"],
-            key="idea_engine_seed_uploader",
-            help="Idea Engine ⑧ Export 단계에서 다운로드한 IdeaSeed_*.json 파일"
-        )
+        # ── 진행 상태 백업 ──
+        st.markdown("---")
+        render_progress_save_button(stage_num=2)
 
-        # 파일 업로드 시 1회 파싱 → session_state에 보관
-        if idea_seed_file is not None:
-            try:
-                seed_str = idea_seed_file.read().decode("utf-8")
-                seed_data = json.loads(seed_str)
 
-                # Idea Engine 메타 검증
-                if "_idea_engine_meta" not in seed_data:
-                    st.error(
-                        "❌ 올바른 Idea Engine JSON이 아닙니다. "
-                        "이 자리는 Idea Engine 시드 전용이며, "
-                        "Creator Engine 자체 백업 JSON은 아래의 "
-                        "📁 프로젝트 JSON 불러오기 (세션 복구)에 올려주세요."
-                    )
+def _foundation_is_green(foundation) -> bool:
+    """3-A 진단이 GREEN인지 판정 (v1.5).
+
+    GREEN이면 보강 단계를 건너뛰고 3-B로 직행, 아니면(YELLOW·RED) 보강.
+    판정 우선순위: foundation_verdict 문자열 → 없으면 total_score 40 기준.
+    """
+    if not foundation:
+        return True  # 진단 없으면 게이트하지 않음 (방어적)
+    verdict = str(foundation.get("foundation_verdict", "")).upper()
+    if "GREEN" in verdict:
+        return True
+    if "YELLOW" in verdict or "RED" in verdict:
+        return False
+    # verdict 문자열이 불명확하면 총점으로 판정 (40점 기준)
+    raw = foundation.get("foundation_total_score", "")
+    try:
+        m = re.search(r"\d+", str(raw))
+        if m:
+            return int(m.group()) >= 40
+    except (ValueError, TypeError):
+        pass
+    return True  # 점수도 못 읽으면 게이트하지 않음 (기존 흐름 보존)
+
+
+def page_stage_3():
+    """Stage 3 격상판 (v1.2) — Story Core 5원칙 → Hook & Punch 발굴 → 5축 채점"""
+    section_header("🎯 STEP 3 · 후크 진단", "FOUNDATION → HOOK & PUNCH → SCORING")
+    small_meta(
+        "Story Core 5원칙으로 본질 진단 → Hook & Punch 발굴 → 5축 채점의 3단 구조. "
+        "한국 + 할리우드 좌표가 자동 매핑됩니다."
+    )
+
+    inp = st.session_state["stage_1_input"]
+    logline = st.session_state.get("selected_logline", "")
+
+    # 진행 상태 표시 (동적 stepper — 보강 필요 시 3-A+ 칸 추가)
+    foundation_done = bool(st.session_state.get("stage_3_foundation"))
+    hp_built_done = bool(st.session_state.get("stage_3_hook_punch_built"))
+    scoring_done = bool(st.session_state.get("stage_3_hook"))
+    reinforce_built_done = bool(st.session_state.get("stage_3_reinforce_built"))
+
+    # 3-A 진단이 끝났고 GREEN이 아니면 보강 단계가 필요하다 (v1.5)
+    needs_reinforce = False
+    if foundation_done:
+        needs_reinforce = not _foundation_is_green(st.session_state["stage_3_foundation"])
+
+    if needs_reinforce:
+        cstep_a, cstep_ap, cstep_b, cstep_c = st.columns(4)
+        with cstep_ap:
+            st.markdown(
+                f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if reinforce_built_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;font-size:.9rem;">
+                {'✓' if reinforce_built_done else '◆'} 3-A+ · 보강
+                </div>""", unsafe_allow_html=True)
+    else:
+        cstep_a, cstep_b, cstep_c = st.columns(3)
+
+    with cstep_a:
+        st.markdown(
+            f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if foundation_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;">
+            {'✓' if foundation_done else '①'} 3-A · Story Core 5원칙
+            </div>""", unsafe_allow_html=True)
+    with cstep_b:
+        st.markdown(
+            f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if hp_built_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;">
+            {'✓' if hp_built_done else '②'} 3-B · Hook & Punch
+            </div>""", unsafe_allow_html=True)
+    with cstep_c:
+        st.markdown(
+            f"""<div style="text-align:center;padding:8px;background:{'#FFCB05' if scoring_done else '#F0F2FF'};border-radius:8px;font-weight:700;color:#191970;">
+            {'✓' if scoring_done else '③'} 3-C · 5축 채점
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ════════════════════════════════════════════════════════
+    # 3-A: Story Core 5원칙 진단
+    # ════════════════════════════════════════════════════════
+    if not foundation_done:
+        st.markdown("### 🎬 3-A · Story Core 5원칙 진단")
+        st.markdown(
+            '<div class="callout">'
+            'BLUE JEANS의 Story Core 5원칙으로 본질을 진단합니다 (Pixar Andrew Stanton의 스토리텔링 5원칙 기반). '
+            'Empathy Anchor · Desire Engine · Stakes Calibration · Emotional Impact · Satisfactory Ending — '
+            '각 원칙마다 한국·할리우드 좌표 작품이 자동 매핑됩니다.'
+            '</div>', unsafe_allow_html=True)
+
+        if st.button("🎬 Story Core 5원칙 진단 실행", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            if not client:
+                st.warning("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+                return
+            with st.spinner("Sonnet이 Story Core 5원칙 + 한국·할리우드 좌표 매핑 중... (30~60초)"):
+                prompt_text = P.STAGE_3A_STORY_FOUNDATION_PROMPT.format(
+                    title=inp["title"], logline=logline,
+                    genre=inp["genre"], target_market=inp["target_market"],
+                    format=inp["format"], raw_idea=inp["raw_idea"],
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                    return
+                st.session_state["stage_3_foundation"] = result
+                st.rerun()
+
+        # 이전 / 백업
+        st.markdown("---")
+        cb, _ = st.columns([1, 3])
+        with cb:
+            if st.button("← 이전"):
+                st.session_state["current_stage"] = 2
+                st.rerun()
+        render_progress_save_button(stage_num=3)
+        return
+
+    # 3-A 결과 표시
+    foundation = st.session_state["stage_3_foundation"]
+    _render_foundation_result(foundation)
+
+    # ════════════════════════════════════════════════════════
+    # 3-A+ : 5원칙 보강 발굴 (v1.5 — GREEN이 아닐 때만)
+    # ════════════════════════════════════════════════════════
+    if not _foundation_is_green(foundation):
+        reinforce_built = st.session_state.get("stage_3_reinforce_built")
+
+        # 보강이 아직 완료되지 않았으면 보강 단계를 진행하고 게이트한다
+        if not reinforce_built:
+            st.markdown("---")
+            st.markdown("### ◆ 3-A+ · 5원칙 보강 발굴")
+            verdict = foundation.get("foundation_verdict", "")
+            weakest = foundation.get("weakest_principle", "")
+            st.markdown(
+                '<div class="callout">'
+                f'본질 진단이 <b>{verdict}</b>로, GREEN(40점) 기준에 미치지 못했습니다. '
+                f'가장 약한 지점(<b>{weakest}</b>)을 집중 보강한 뒤 Hook & Punch 발굴로 넘어갑니다. '
+                'Hook은 단단한 본질 위에서만 작동합니다.'
+                '</div>', unsafe_allow_html=True)
+
+            # 보강 질문지 생성 (한 번만)
+            rf_questions = st.session_state.get("stage_3_reinforce_questions")
+            if not rf_questions:
+                if st.button("◆ 보강 발굴 질문 생성 (Sonnet)", type="primary", use_container_width=True):
+                    client = get_anthropic_client()
+                    if not client:
+                        st.warning("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+                        return
+                    with st.spinner("Sonnet이 약한 원칙을 집어 보강 질문을 생성 중... (20~40초)"):
+                        prompt_text = P.STAGE_3A_PLUS_REINFORCE_PROMPT.format(
+                            title=inp["title"], genre=inp["genre"], logline=logline,
+                            raw_idea=inp["raw_idea"],
+                            foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                        )
+                        result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                        if result.get("_parse_error"):
+                            st.error("응답 파싱 실패")
+                            with st.expander("Raw 응답"):
+                                st.text(result.get("_raw", ""))
+                            return
+                        st.session_state["stage_3_reinforce_questions"] = result
+                        st.rerun()
+                _stage3_back_buttons()
+                return
+
+            # 보강 질문 표시 + 답변 수집
+            if rf_questions.get("echo_back"):
+                st.markdown(f"*{rf_questions['echo_back']}*")
+            if rf_questions.get("reinforce_intro"):
+                st.caption(rf_questions["reinforce_intro"])
+
+            rf_answers = {}
+            for q in rf_questions.get("reinforce_questions", []):
+                qid = q.get("q_id", "")
+                st.markdown(f"**{qid} · {q.get('target_principle', '')}** — {q.get('question', '')}")
+                hints = q.get("hint_options", [])
+                if hints:
+                    st.caption("참고: " + " / ".join(hints))
+                rf_answers[qid] = st.text_area(
+                    f"답변 {qid}", key=f"s3ap_{qid}", height=70,
+                    label_visibility="collapsed",
+                )
+
+            if st.button("◆ 보강된 본질 진단 빌드 (Sonnet)", type="primary", use_container_width=True):
+                if not all(v.strip() for v in rf_answers.values()):
+                    st.warning("모든 질문에 답해주세요.")
                 else:
-                    # 시드 보관 (Stage 전체에서 활용)
-                    st.session_state["locked_seed"] = seed_data.get("locked_seed", {})
-                    st.session_state["idea_seed_loaded"] = seed_data
-
-                    meta = seed_data.get("_idea_engine_meta", {})
-                    project_id = meta.get("project_id", "—")
-                    verdict = meta.get("verdict", "—")
-                    hook_score = meta.get("hook_score", 0)
-
-                    # Verdict별 색상
-                    verdict_color = {
-                        "GO": "#2EC484",
-                        "CONDITIONAL": "#FFCB05",
-                        "NOGO": "#D32F2F",
-                    }.get(verdict, "#8E8E99")
-
-                    st.markdown(
-                        f'<div class="callout" style="border-left-color:{verdict_color};">'
-                        f'<div class="cl">🔑 Idea Engine 시드 로드 완료</div>'
-                        f'<b style="font-size:1rem;">{seed_data.get("title", "제목 없음")}</b><br>'
-                        f'<span style="font-size:.85rem;">'
-                        f'Project: <code>{project_id}</code> · '
-                        f'<b style="color:{verdict_color};">{verdict}</b> · '
-                        f'Hook Score <b>{hook_score}/50</b>'
-                        f'</span></div>',
-                        unsafe_allow_html=True
-                    )
-
-                    # 임원 요약 (있으면)
-                    exec_summary = seed_data.get("executive_summary", "")
-                    if exec_summary:
-                        with st.expander("📋 Executive Summary 보기", expanded=False):
-                            st.markdown(exec_summary)
-
-                    # Creator Engine에서 결정할 펜딩 질문
-                    pending = seed_data.get("pending_decisions", [])
-                    if pending:
-                        st.markdown("**📝 Creator Engine에서 결정할 사항**")
-                        for q in pending:
-                            st.markdown(f"- {q}")
-
-                    # LOCKED 시드 핵심 항목 미리보기
-                    locked_seed = seed_data.get("locked_seed", {})
-                    if locked_seed:
-                        with st.expander("🔒 LOCKED 시드 패키지 상세", expanded=False):
-                            ll = locked_seed.get("locked_logline", "")
-                            if ll:
-                                st.markdown(f"**LOCKED 로그라인**: {ll}")
-                            lg = locked_seed.get("locked_genre", {})
-                            if lg:
-                                st.markdown(
-                                    f"**장르**: {lg.get('primary', '')}"
-                                    + (f" / {lg.get('secondary', '')}" if lg.get('secondary') else "")
-                                )
-                            lr = locked_seed.get("locked_references", [])
-                            if lr:
-                                ref_titles = []
-                                for r in lr:
-                                    if isinstance(r, dict):
-                                        ref_titles.append(r.get("title", ""))
-                                    elif isinstance(r, str):
-                                        ref_titles.append(r)
-                                ref_titles = [t for t in ref_titles if t]
-                                if ref_titles:
-                                    st.markdown(f"**레퍼런스**: {' / '.join(ref_titles)}")
-                            risks = locked_seed.get("locked_risks_to_address", [])
-                            if risks:
-                                st.markdown("**위험 요소 (Treatment 단계에서 다룰 것)**:")
-                                for r in risks:
-                                    st.markdown(f"- {r}")
-
-                    st.success(
-                        "✅ 아래 '➕ 새 프로젝트'에 시드 데이터가 자동 입력됩니다. "
-                        "필요하면 직접 수정하실 수 있습니다."
-                    )
-
-                    # 시드 제거 버튼
-                    if st.button("🗑️ 시드 제거 (직접 입력으로 전환)",
-                                 key="clear_idea_seed", use_container_width=False):
-                        for k in ("locked_seed", "idea_seed_loaded"):
-                            if k in st.session_state:
-                                del st.session_state[k]
+                    client = get_anthropic_client()
+                    st.session_state["stage_3_reinforce_answers"] = rf_answers
+                    with st.spinner("Sonnet이 보강된 5원칙 진단을 다시 빌드 중... (30~50초)"):
+                        prompt_text = P.STAGE_3A_PLUS_BUILD_PROMPT.format(
+                            title=inp["title"], genre=inp["genre"], logline=logline,
+                            raw_idea=inp["raw_idea"],
+                            foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                            reinforce_answers=json.dumps(rf_answers, ensure_ascii=False, indent=2),
+                        )
+                        result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                        if result.get("_parse_error"):
+                            st.error("응답 파싱 실패")
+                            with st.expander("Raw 응답"):
+                                st.text(result.get("_raw", ""))
+                            return
+                        st.session_state["stage_3_reinforce_built"] = result
                         st.rerun()
 
-            except json.JSONDecodeError as e:
-                st.error(f"❌ JSON 파싱 실패: {e}")
-            except Exception as e:
-                st.error(f"❌ 시드 로드 실패: {e}")
+            _stage3_back_buttons()
+            return
 
-    # 새 프로젝트 생성
-    with st.expander("➕ 새 프로젝트", expanded=not bool(st.session_state.projects)):
-        # ── v2.4.0: Idea Engine 시드가 로드되어 있으면 default value 추출 ──
-        _seed_full = st.session_state.get("idea_seed_loaded", {}) or {}
-        _seed_locked = st.session_state.get("locked_seed", {}) or {}
-        _seed_default_title = _seed_full.get("title", "")
-        _seed_default_idea = _seed_full.get("raw_idea", "") or _seed_locked.get("locked_logline", "")
-        _seed_default_genre = _seed_full.get("genre", "") or _seed_locked.get("locked_genre", {}).get("primary", "")
-        _seed_default_market = _seed_full.get("target_market", "")
-        _seed_default_format = _seed_full.get("format", "") or _seed_locked.get("locked_format", {}).get("primary", "")
+        # 보강 완료 — 보강본 결과 표시 후 foundation을 보강본으로 교체
+        st.markdown("---")
+        st.markdown("### ◆ 3-A+ · 보강 결과")
+        if reinforce_built.get("reinforcement_summary"):
+            new_score = reinforce_built.get("foundation_total_score", "?")
+            new_verdict = reinforce_built.get("foundation_verdict", "")
+            st.success(f"보강 후: {new_score}/50 · {new_verdict}")
+            st.markdown(reinforce_built["reinforcement_summary"])
+        _render_foundation_result(reinforce_built)
+        # 하류 단계(3-B)는 보강본을 받는다
+        foundation = reinforce_built
 
-        # LOCKED 자동 생성 — 시드의 핵심 항목을 한 줄씩 텍스트로
-        # ─── v2.5.2: Idea Engine 시드의 핵심 결정·모티프·규약까지 확장 추출 ───
-        _seed_default_locked = ""
-        if _seed_locked:
-            _lock_lines = []
-            ll = _seed_locked.get("locked_logline", "")
-            if ll:
-                _lock_lines.append(f"로그라인: {ll}")
-            lg = _seed_locked.get("locked_genre", {})
-            if isinstance(lg, dict) and lg.get("primary"):
-                gtxt = lg["primary"]
-                if lg.get("secondary"):
-                    gtxt += f" / {lg['secondary']}"
-                if lg.get("tertiary"):
-                    gtxt += f" / {lg['tertiary']}"
-                _lock_lines.append(f"장르: {gtxt}")
-            lt = _seed_locked.get("locked_theme", {})
-            if isinstance(lt, dict):
-                if lt.get("surface"):
-                    _lock_lines.append(f"표면 주제: {lt['surface']}")
-                if lt.get("deep"):
-                    _lock_lines.append(f"심층 주제: {lt['deep']}")
-            ltg = _seed_locked.get("locked_target", {})
-            if isinstance(ltg, dict):
-                if ltg.get("domestic"):
-                    _lock_lines.append(f"국내 타겟: {ltg['domestic']}")
-                if ltg.get("global"):
-                    _lock_lines.append(f"글로벌 타겟: {ltg['global']}")
-            lf = _seed_locked.get("locked_format", {})
-            if isinstance(lf, dict):
-                if lf.get("episode_count"):
-                    _lock_lines.append(f"회차/분량: {lf.get('episode_count')} ({lf.get('runtime', '')})")
-            lr = _seed_locked.get("locked_references", [])
-            if isinstance(lr, list) and lr:
-                ref_titles = []
-                for r in lr:
-                    if isinstance(r, dict) and r.get("title"):
-                        ref_titles.append(r["title"])
-                    elif isinstance(r, str):
-                        ref_titles.append(r)
-                if ref_titles:
-                    _lock_lines.append(f"참고작: {' / '.join(ref_titles[:5])}")
-            risks = _seed_locked.get("locked_risks_to_address", [])
-            if isinstance(risks, list) and risks:
-                _lock_lines.append("[Treatment에서 다룰 위험 요소]")
-                for r in risks:
-                    _lock_lines.append(f"- {r}")
+    # ════════════════════════════════════════════════════════
+    # 3-B: Hook & Punch 발굴 (질문지 생성 + 답변 + 빌드)
+    # ════════════════════════════════════════════════════════
+    if not hp_built_done:
+        st.markdown("---")
+        st.markdown("### 🎯 3-B · Hook & Punch 발굴")
 
-            # ─── v2.5.2 신규 추출 영역 5종 ──────────────────────────
-            # 1. 확정된 핵심 결정 (포맷·결말·음악·스타일 등 작품 본질 LOCK)
-            core_decisions = _seed_locked.get("locked_core_decisions", [])
-            if isinstance(core_decisions, list) and core_decisions:
-                _lock_lines.append("")
-                _lock_lines.append("[★ 확정된 핵심 결정 LOCK ★ — 절대 변경 금지]")
+        # 3-B 질문지 생성 (한 번만)
+        hp_questions = st.session_state.get("stage_3_hook_punch_questions")
+        if not hp_questions:
+            st.markdown(
+                '<div class="callout">'
+                '5원칙 진단을 바탕으로, 이 작품의 <b>Hook(한 줄 후크)</b>과 <b>Punch(잊을 수 없는 한 장면)</b>를 발굴합니다. '
+                '10개 질문에 답해주시면 Hook Signature와 Punch Scene이 빌드됩니다.'
+                '</div>', unsafe_allow_html=True)
+
+            if st.button("📝 Hook & Punch 질문지 생성 (Sonnet)", type="primary", use_container_width=True):
+                client = get_anthropic_client()
+                with st.spinner("Sonnet이 Hook 5문 + Punch 5문 생성 중... (20~40초)"):
+                    prompt_text = P.STAGE_3B_HOOK_PUNCH_PROMPT.format(
+                        title=inp["title"], logline=logline, raw_idea=inp["raw_idea"],
+                        foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                    )
+                    result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                    if result.get("_parse_error"):
+                        st.error("응답 파싱 실패")
+                        with st.expander("Raw 응답"):
+                            st.text(result.get("_raw", ""))
+                        return
+                    st.session_state["stage_3_hook_punch_questions"] = result
+                    st.rerun()
+
+            _stage3_back_buttons()
+            return
+
+        # 질문지 표시 + 답변 입력
+        echo = hp_questions.get("echo_back", "")
+        if echo:
+            st.markdown(f'<div class="callout"><b>진단 종합:</b> {echo}</div>', unsafe_allow_html=True)
+
+        # Reference Hints 표시
+        hints = hp_questions.get("reference_hints", {})
+        if hints:
+            with st.expander("💡 참고 좌표 (한국 + 할리우드)", expanded=False):
+                st.markdown(f"**Hook 좌표 — 한국:** {hints.get('hook_reference_korean', '')}")
+                st.markdown(f"**Hook 좌표 — 할리우드:** {hints.get('hook_reference_hollywood', '')}")
+                st.markdown(f"**Punch 좌표 — 한국:** {hints.get('punch_reference_korean', '')}")
+                st.markdown(f"**Punch 좌표 — 할리우드:** {hints.get('punch_reference_hollywood', '')}")
+
+        st.markdown("#### 🎣 Hook 발굴 5문")
+        hook_intro = hp_questions.get("hook_extraction_intro", "")
+        if hook_intro:
+            st.caption(hook_intro)
+
+        hook_answers = {}
+        for q in hp_questions.get("hook_questions", []):
+            qid = q.get("q_id", "")
+            st.markdown(f"**{qid}. {q.get('question', '')}**")
+            principle = q.get("principle", "")
+            if principle:
+                st.caption(f"본질: {principle}")
+            hints_q = q.get("hint_options", []) or []
+            if hints_q:
+                st.caption("보조 옵션: " + " · ".join(hints_q))
+            answer = st.text_area(
+                f"답변 {qid}", key=f"s3b_{qid}", height=70,
+                label_visibility="collapsed",
+                placeholder="자유롭게 작성하시거나 보조 옵션 중에서 선택하세요.",
+            )
+            hook_answers[qid] = answer
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+        st.markdown("#### 💥 Punch 발굴 5문")
+        punch_intro = hp_questions.get("punch_extraction_intro", "")
+        if punch_intro:
+            st.caption(punch_intro)
+
+        punch_answers = {}
+        for q in hp_questions.get("punch_questions", []):
+            qid = q.get("q_id", "")
+            st.markdown(f"**{qid}. {q.get('question', '')}**")
+            principle = q.get("principle", "")
+            if principle:
+                st.caption(f"본질: {principle}")
+            hints_q = q.get("hint_options", []) or []
+            if hints_q:
+                st.caption("보조 옵션: " + " · ".join(hints_q))
+            answer = st.text_area(
+                f"답변 {qid}", key=f"s3b_{qid}", height=70,
+                label_visibility="collapsed",
+                placeholder="자유롭게 작성하시거나 보조 옵션 중에서 선택하세요.",
+            )
+            punch_answers[qid] = answer
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+        if st.button("🎯 Hook Signature + Punch Scene 빌드 (Sonnet)", type="primary", use_container_width=True):
+            # 답변 통합
+            all_answers = {**hook_answers, **punch_answers}
+            empty = [k for k, v in all_answers.items() if not v.strip()]
+            if empty:
+                st.warning(f"미답변: {', '.join(empty)} — 10문 모두 답해주세요.")
+                return
+
+            st.session_state["stage_3_hook_punch_answers"] = all_answers
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 Hook Signature + Punch Scene 빌드 중... (30~50초)"):
+                prompt_text = P.STAGE_3B_BUILD_PROMPT.format(
+                    title=inp["title"], logline=logline, raw_idea=inp["raw_idea"],
+                    foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                    hook_punch_answers=json.dumps(all_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                    return
+                st.session_state["stage_3_hook_punch_built"] = result
+                st.rerun()
+
+        _stage3_back_buttons()
+        return
+
+    # 3-B 결과 표시
+    hp_built = st.session_state["stage_3_hook_punch_built"]
+    _render_hook_punch_result(hp_built)
+
+    # ════════════════════════════════════════════════════════
+    # 3-C: 5축 채점 (기존 Hook Diagnostic)
+    # ════════════════════════════════════════════════════════
+    if not scoring_done:
+        st.markdown("---")
+        st.markdown("### 📊 3-C · 5축 채점")
+        st.markdown(
+            '<div class="callout">'
+            '발굴된 Hook & Punch를 바탕으로 5축(구체성 · 갈등 가시성 · 장르 명확성 · 판돈 · 독창성) 채점을 진행합니다. '
+            '발굴 단계를 거쳐서 채점 정확도가 향상됩니다.'
+            '</div>', unsafe_allow_html=True)
+
+        if st.button("📊 5축 채점 실행 (Sonnet)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 5축 채점 중... (20~30초)"):
+                # 채점에 발굴된 Hook을 함께 전달 (정확도 ↑)
+                hook_one_liner = hp_built.get("hook_signature", {}).get("hook_one_liner", "")
+                enriched_idea = inp["raw_idea"]
+                if hook_one_liner:
+                    enriched_idea += f"\n\n[발굴된 Hook]: {hook_one_liner}"
+
+                prompt_text = P.HOOK_DIAGNOSTIC_PROMPT.format(
+                    title=inp["title"], logline=logline,
+                    genre=inp["genre"], format=inp["format"], raw_idea=enriched_idea,
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    return
+                st.session_state["stage_3_hook"] = result
+                st.rerun()
+
+        _stage3_back_buttons()
+        return
+
+    # 3-C 결과 표시 — 기존 채점 UI
+    hk = st.session_state["stage_3_hook"]
+    st.markdown("---")
+    st.markdown("### 📊 3-C · 5축 채점 결과")
+    if hk.get("_rescored"):
+        rc = st.session_state.get("stage_3_cplus_rescore_count", 0)
+        st.success(f"🔧 3-C+ 보강 반영본 (보완 {rc}회) — {hk.get('reinforcement_summary', '')}")
+    _render_scoring_result(hk)
+
+    # ── 3-C+ Hook 약점 보완 (v2.1) — CONDITIONAL/FAIL일 때 선택 진입 ──
+    status = hk.get("gate_status", "")
+    weak_axes_now = [k for k, v in hk.get("scores", {}).items()
+                     if isinstance(v, dict) and v.get("score", 10) < 7]
+    can_reinforce = (status in ("CONDITIONAL", "FAIL")) and len(weak_axes_now) > 0
+    rescore_count = st.session_state.get("stage_3_cplus_rescore_count", 0)
+
+    if can_reinforce:
+        st.markdown("---")
+        st.markdown("### 🔧 3-C+ · Hook 약점 보완 (선택)")
+        st.markdown(
+            '<div class="callout">'
+            'CONDITIONAL 상태입니다. 장르·기획에 확신이 있으면 그대로 <b>Format으로 진행</b>하셔도 됩니다. '
+            '확신이 서지 않으면 아래에서 약점 보완을 진행합니다 — 엔진이 완성형 보강안을 제시하고, '
+            '<b>선택하신 안만 반영해</b> 5축을 다시 채점합니다. 최종 시드 구조는 바뀌지 않습니다.'
+            '</div>', unsafe_allow_html=True)
+        _render_cplus_reinforce(hk, inp, logline)
+
+    # ── 다음 단계 / 이전 / 재실행 ──
+    st.markdown("---")
+    cb, cr, cn = st.columns([1, 1, 2])
+    with cb:
+        if st.button("← 이전"):
+            st.session_state["current_stage"] = 2
+            st.rerun()
+    with cr:
+        if st.button("재실행 (3-C만)"):
+            st.session_state["stage_3_hook"] = None
+            st.session_state["stage_3_cplus_suggestions"] = None
+            st.rerun()
+    with cn:
+        if status == "FAIL":
+            st.error("🔴 FAIL — Override 시 진행 가능")
+            if st.button("⚠ Override하고 Format으로 →", use_container_width=True):
+                st.session_state["current_stage"] = 4
+                st.rerun()
+        else:
+            if st.button("Format 추천으로 →", type="primary", use_container_width=True):
+                st.session_state["current_stage"] = 4
+                st.rerun()
+
+    # 3-A·3-A+·3-B 재실행 옵션
+    with st.expander("🔄 이전 단계 다시 하기", expanded=False):
+        cr_a, cr_ap, cr_b = st.columns(3)
+        with cr_a:
+            if st.button("3-A Story Core 5원칙 재실행", key="rerun_3a"):
+                for k in ["stage_3_foundation",
+                          "stage_3_reinforce_questions", "stage_3_reinforce_answers", "stage_3_reinforce_built",
+                          "stage_3_hook_punch_questions",
+                          "stage_3_hook_punch_answers", "stage_3_hook_punch_built", "stage_3_hook"]:
+                    st.session_state[k] = None
+                st.rerun()
+        with cr_ap:
+            if st.button("3-A+ 보강 재실행", key="rerun_3ap"):
+                for k in ["stage_3_reinforce_questions", "stage_3_reinforce_answers",
+                          "stage_3_reinforce_built",
+                          "stage_3_hook_punch_questions", "stage_3_hook_punch_answers",
+                          "stage_3_hook_punch_built", "stage_3_hook"]:
+                    st.session_state[k] = None
+                st.rerun()
+        with cr_b:
+            if st.button("3-B Hook&Punch 재실행", key="rerun_3b"):
+                for k in ["stage_3_hook_punch_questions", "stage_3_hook_punch_answers",
+                          "stage_3_hook_punch_built", "stage_3_hook"]:
+                    st.session_state[k] = None
+                st.rerun()
+
+    # ── 진행 상태 백업 ──
+    st.markdown("---")
+    render_progress_save_button(stage_num=3)
+
+
+def _render_cplus_reinforce(hk, inp, logline):
+    """3-C+ Hook 약점 보완 (v2.1).
+
+    3-C 채점 결과(hk)에서 약한 축의 완성형 보강안을 엔진이 생성 → 작가는 객관식 선택 →
+    선택안만 반영해 5축 재채점 → stage_3_hook 딕셔너리를 동일 스키마로 교체.
+    하류(Format·시드)는 무변경으로 받는다. 재채점은 최대 2회.
+    """
+    MAX_RESCORE = 2
+    rescore_count = st.session_state.get("stage_3_cplus_rescore_count", 0)
+
+    if rescore_count >= MAX_RESCORE:
+        st.info(
+            f"약점 보완을 {MAX_RESCORE}회 진행했습니다. "
+            "추가 개선이 필요하면 본질(3-A Story Core 5원칙) 재검토를 권장합니다. "
+            "현재 점수로 Format 진행도 가능합니다."
+        )
+        return
+
+    suggestions = st.session_state.get("stage_3_cplus_suggestions")
+
+    # ── 1단계: 보강안 생성 ──
+    if not suggestions:
+        if st.button("💡 보강안 생성 (Sonnet)", key="cplus_gen", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 약점 축별 보강안을 작성 중... (20~30초)"):
+                prompt_text = P.STAGE_3C_PLUS_SUGGEST_PROMPT.format(
+                    title=inp["title"], genre=inp["genre"], logline=logline,
+                    raw_idea=inp["raw_idea"],
+                    hook_result=json.dumps(hk, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("보강안 생성 응답 파싱 실패")
+                    return
+                st.session_state["stage_3_cplus_suggestions"] = result
+                st.rerun()
+        return
+
+    # ── 2단계: 보강안 객관식 선택 ──
+    if suggestions.get("echo_back"):
+        st.markdown(f"**진단 요약** — {suggestions['echo_back']}")
+    if suggestions.get("suggest_intro"):
+        st.caption(suggestions["suggest_intro"])
+
+    axis_suggestions = suggestions.get("axis_suggestions", [])
+    if not axis_suggestions:
+        st.warning("생성된 보강안이 없습니다. 재실행하거나 현재 점수로 진행하십시오.")
+        return
+
+    adopted = []  # 채택된 옵션 모음 (RESCORE 입력)
+    for ax in axis_suggestions:
+        axis_label = ax.get("axis_label_kr", ax.get("axis_key", ""))
+        cur = ax.get("current_score", "")
+        st.markdown(f"#### {axis_label} · 현재 {cur}/10")
+        if ax.get("current_comment"):
+            st.caption(ax["current_comment"])
+
+        opts = ax.get("options", [])
+        # 라디오 라벨: 제목 + 효과. '선택 안 함'을 맨 앞에 둬서 강제하지 않음.
+        radio_labels = ["(이 축은 보완 안 함)"]
+        opt_map = {}
+        for o in opts:
+            lbl = f"{o.get('label', '(무제)')} — {o.get('effect', '')}"
+            radio_labels.append(lbl)
+            opt_map[lbl] = o
+
+        chosen = st.radio(
+            f"{axis_label} 보강안 선택",
+            radio_labels,
+            key=f"cplus_radio_{ax.get('axis_key', axis_label)}",
+            label_visibility="collapsed",
+        )
+        # 선택된 안의 본문을 펼쳐 보여줌
+        if chosen in opt_map:
+            picked = opt_map[chosen]
+            st.markdown(
+                f'<div style="background:#F0F2FF;border-left:3px solid #191970;'
+                f'padding:8px 12px;border-radius:6px;font-size:.9rem;">'
+                f'{picked.get("content", "")}</div>',
+                unsafe_allow_html=True,
+            )
+            adopted.append({
+                "axis_key": ax.get("axis_key", ""),
+                "axis_label": axis_label,
+                "label": picked.get("label", ""),
+                "content": picked.get("content", ""),
+            })
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+    # ── 3단계: 재채점 실행 ──
+    st.markdown("---")
+    ca, cbn = st.columns([1, 1])
+    with ca:
+        if st.button("↺ 보강안 다시 생성", key="cplus_regen"):
+            st.session_state["stage_3_cplus_suggestions"] = None
+            st.rerun()
+    with cbn:
+        disabled = (len(adopted) == 0)
+        if st.button("✅ 선택안 반영해 재채점", key="cplus_rescore",
+                     type="primary", use_container_width=True, disabled=disabled):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 보강 반영 5축 재채점 중... (20~30초)"):
+                prompt_text = P.STAGE_3C_PLUS_RESCORE_PROMPT.format(
+                    title=inp["title"], logline=logline,
+                    genre=inp["genre"], format=inp["format"],
+                    raw_idea=inp["raw_idea"],
+                    hook_result=json.dumps(hk, ensure_ascii=False, indent=2),
+                    adopted_options=json.dumps(adopted, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("재채점 응답 파싱 실패")
+                    return
+                # stage_3_hook을 동일 스키마 결과로 교체 → 하류 무변경
+                st.session_state["stage_3_hook"] = result
+                st.session_state["stage_3_cplus_suggestions"] = None
+                st.session_state["stage_3_cplus_rescore_count"] = rescore_count + 1
+                st.rerun()
+    if disabled:
+        st.caption("보강안을 최소 1개 이상 선택하면 재채점이 활성화됩니다.")
+
+
+def _stage3_back_buttons():
+    """Stage 3 진행 중 사용하는 공통 뒤로/백업 버튼."""
+    st.markdown("---")
+    cb, _ = st.columns([1, 3])
+    with cb:
+        if st.button("← 이전"):
+            st.session_state["current_stage"] = 2
+            st.rerun()
+    render_progress_save_button(stage_num=3)
+
+
+def _render_foundation_result(foundation):
+    """3-A Story Core 5원칙 결과 렌더링."""
+    st.markdown("### 🎬 3-A · Story Core 5원칙 진단 결과")
+
+    total = foundation.get("foundation_total_score", 0)
+    verdict = foundation.get("foundation_verdict", "")
+    weakest = foundation.get("weakest_principle", "")
+    strongest = foundation.get("strongest_principle", "")
+
+    # 총점 + 판정
+    col_score, col_verdict = st.columns([1, 2])
+    with col_score:
+        st.markdown(f"""
+        <div class="metric-tile">
+            <div class="num">{total}/50</div>
+            <div class="label">FOUNDATION SCORE</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_verdict:
+        if "GREEN" in verdict.upper() or "40" in verdict:
+            st.success(f"🟢 {verdict}")
+        elif "YELLOW" in verdict.upper() or "30" in verdict:
+            st.warning(f"🟡 {verdict}")
+        else:
+            st.error(f"🔴 {verdict}")
+        st.caption(f"**가장 강함:** {strongest} · **가장 약함:** {weakest}")
+
+    # 5원칙 카드
+    principles_meta = [
+        ("principle_1_empathy_anchor", "① Empathy Anchor", "감정이입 가능한 누군가"),
+        ("principle_2_desire_engine", "② Desire Engine", "간절히 원하는 것"),
+        ("principle_3_stakes_calibration", "③ Stakes Calibration", "어렵지만 가능"),
+        ("principle_4_emotional_impact", "④ Emotional Impact", "최대 감정 충격"),
+        ("principle_5_satisfactory_ending", "⑤ Satisfactory Ending", "만족스러운 결말"),
+    ]
+
+    for key, label, sub in principles_meta:
+        p = foundation.get(key, {})
+        score = p.get("diagnosis_score", 0)
+        bg = "#E8F5E9" if score >= 7 else "#FFF8E1" if score >= 5 else "#FFEBEE"
+        border = "#2E7D32" if score >= 7 else "#F57F17" if score >= 5 else "#C62828"
+
+        with st.expander(f"{label} — {sub} · {score}/10", expanded=False):
+            st.markdown(f"<div style='background:{bg};border-left:3px solid {border};padding:10px;border-radius:6px;margin-bottom:8px;'>"
+                       f"<b>진단:</b> {p.get('diagnosis', '')}</div>", unsafe_allow_html=True)
+
+            # 원칙별 메타데이터
+            if key == "principle_1_empathy_anchor":
+                st.markdown(f"- **타입:** {p.get('anchor_type', '')}")
+                st.markdown(f"- **진입점:** {p.get('entry_point', '')}")
+                st.markdown(f"- **시청자 거리:** {p.get('audience_distance', '')}")
+            elif key == "principle_2_desire_engine":
+                st.markdown(f"- **BJND:** {p.get('bjnd_type', '')}")
+                st.markdown(f"- **욕망 대상:** {p.get('desire_target', '')}")
+                st.markdown(f"- **강도:** {p.get('desire_intensity', '')}")
+            elif key == "principle_3_stakes_calibration":
+                st.markdown(f"- **외적 장애물:** {p.get('external_obstacle', '')}")
+                st.markdown(f"- **내적 장애물:** {p.get('internal_obstacle', '')}")
+                st.markdown(f"- **도달 가능성:** {p.get('achievability', '')}")
+            elif key == "principle_4_emotional_impact":
+                st.markdown(f"- **Hook 가능성:** {p.get('hook_potential', '')}")
+                st.markdown(f"- **Punch 가시성:** {p.get('punch_visibility', '')}")
+                st.markdown(f"- **주요 감정:** {p.get('primary_emotion', '')}")
+                st.markdown(f"- **시청자 거울:** {p.get('audience_mirror', '')}")
+            elif key == "principle_5_satisfactory_ending":
+                st.markdown(f"- **결말 유형:** {p.get('ending_type', '')}")
+                st.markdown(f"- **카타르시스:** {p.get('catharsis_mechanism', '')}")
+                st.markdown(f"- **작가 결말 인지:** {'✓' if p.get('writer_knows_ending') else '✗ (미정)'}")
+
+            # 좌표 매핑
+            kr_ref = p.get("korean_reference", "")
+            hw_ref = p.get("hollywood_reference", "")
+            if kr_ref or hw_ref:
+                st.markdown("**좌표 매핑:**")
+                if kr_ref:
+                    st.markdown(f"  🇰🇷 {kr_ref}")
+                if hw_ref:
+                    st.markdown(f"  🇺🇸 {hw_ref}")
+
+            improvement = p.get("improvement_note", "")
+            if improvement:
+                st.caption(f"💡 보강 방향: {improvement}")
+
+    # 다음 단계 안내
+    next_step = foundation.get("next_step_guidance", "")
+    if next_step:
+        st.markdown(f'<div class="callout"><b>다음 단계:</b> {next_step}</div>', unsafe_allow_html=True)
+
+
+def _render_hook_punch_result(hp_built):
+    """3-B Hook & Punch 빌드 결과 렌더링."""
+    st.markdown("---")
+    st.markdown("### 🎯 3-B · Hook Signature + Punch Scene")
+
+    # Hook Signature 카드
+    hs = hp_built.get("hook_signature", {})
+    st.markdown(f"""
+    <div style="border:2px solid #191970;border-radius:12px;padding:18px;background:#F0F2FF;margin-bottom:12px;">
+        <div style="display:inline-block;background:#191970;color:#FFCB05;font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:999px;">🎣 HOOK SIGNATURE</div>
+        <div style="font-family:'Playfair Display',serif;font-size:1.15rem;font-weight:700;color:#191970;margin-top:10px;line-height:1.4;">
+            "{hs.get('hook_one_liner', '')}"
+        </div>
+        <div style="margin-top:10px;font-size:.85rem;color:#555;">
+            <b>메커니즘:</b> {hs.get('mechanism', '')}<br>
+            <b>약속:</b> {hs.get('promise', '')}<br>
+            <b>차별점:</b> {hs.get('differentiation', '')}
+        </div>
+        {f'<div style="margin-top:8px;font-size:.78rem;color:#C62828;font-style:italic;">⚠ 약점: {hs.get("weakness", "")}</div>' if hs.get('weakness') else ''}
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Punch Scene 카드
+    ps = hp_built.get("punch_scene", {})
+    sig_pot = ps.get("signature_potential", "MEDIUM")
+    sig_color = "#2E7D32" if sig_pot == "HIGH" else "#F57F17" if sig_pot == "MEDIUM" else "#999"
+
+    st.markdown(f"""
+    <div style="border:2px solid #FFCB05;border-radius:12px;padding:18px;background:#FFFEF5;margin-bottom:12px;">
+        <div style="display:inline-block;background:#FFCB05;color:#191970;font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:999px;">💥 PUNCH SCENE</div>
+        <div style="margin-top:10px;font-size:.95rem;color:#1A1A2E;line-height:1.6;">
+            {ps.get('scene_description', '')}
+        </div>
+        <div style="margin-top:10px;font-size:.85rem;color:#555;">
+            <b>대사 모드:</b> {ps.get('dialogue_mode', '')} ·
+            <b>마지막 컷:</b> {ps.get('final_shot', '')}<br>
+            <b>정서:</b> {ps.get('primary_emotion', '')} ·
+            <b>배치:</b> {ps.get('placement', '')}
+        </div>
+        <div style="margin-top:8px;font-size:.78rem;color:{sig_color};font-weight:700;">
+            ★ 시각적 서명 가능성: {sig_pot}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 정합 진단
+    align = hp_built.get("alignment_diagnosis", {})
+    align_check = align.get("alignment_check", "")
+    if align_check:
+        if "정합" == align_check:
+            st.success(f"✓ **Hook ↔ Punch 정합** — {align.get('alignment_reasoning', '')}")
+        elif "부분" in align_check:
+            st.warning(f"🟡 **부분 정합** — {align.get('alignment_reasoning', '')}")
+            if align.get("adjustment_needed"):
+                st.caption(f"조정 방향: {align['adjustment_needed']}")
+        else:
+            st.error(f"🔴 **어긋남** — {align.get('alignment_reasoning', '')}")
+            if align.get("adjustment_needed"):
+                st.caption(f"조정 방향: {align['adjustment_needed']}")
+
+    # 좌표 매핑
+    anchor = hp_built.get("anchor_mapping", {})
+    if anchor:
+        with st.expander("📍 최종 좌표 매핑", expanded=True):
+            st.markdown(f"🇰🇷 **한국 좌표:** {anchor.get('korean_anchor', '')}")
+            st.markdown(f"🇺🇸 **할리우드 좌표:** {anchor.get('hollywood_anchor', '')}")
+            if anchor.get("market_coordinate"):
+                st.markdown(f'<div class="callout"><b>시장 좌표:</b> {anchor["market_coordinate"]}</div>', unsafe_allow_html=True)
+
+
+def _render_scoring_result(hk):
+    """3-C 5축 채점 결과 렌더링 (기존 UI 유지)."""
+    scores = hk.get("scores", {})
+    axis_kr = {
+        "specificity": "구체성", "conflict_visibility": "갈등 가시성",
+        "genre_clarity": "장르 명확성", "stakes": "판돈", "originality": "독창성"
+    }
+
+    categories = list(axis_kr.values())
+    values = [scores.get(k, {}).get("score", 0) for k in axis_kr.keys()]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=values, theta=categories, fill='toself', name='Hook Score',
+        line=dict(color='#191970', width=2),
+        fillcolor='rgba(255, 203, 5, 0.4)'
+    ))
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 10], tickfont=dict(size=10)),
+            angularaxis=dict(tickfont=dict(size=12, family='Pretendard'))
+        ),
+        showlegend=False, height=400, margin=dict(l=80, r=80, t=40, b=40),
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+    )
+
+    cc, cs = st.columns([1, 1])
+    with cc:
+        st.plotly_chart(fig, use_container_width=True)
+    with cs:
+        total = hk.get("total_score", 0)
+        status = hk.get("gate_status", "")
+        st.markdown(f"""
+        <div class="metric-tile">
+            <div class="num">{total}/50</div>
+            <div class="label">TOTAL HOOK SCORE</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if status == "PASS":
+            st.success(f"🟢 **{status}** — 35점 이상으로 GO 진행 가능")
+        elif status == "CONDITIONAL":
+            st.warning(f"🟡 **{status}** — 약점 보강 필요")
+        else:
+            st.error(f"🔴 **{status}** — 재고 권장")
+
+    st.markdown("**축별 진단**")
+    for k, kr in axis_kr.items():
+        sc = scores.get(k, {})
+        score = sc.get("score", 0)
+        cls = "pass" if score >= 7 else "warn" if score >= 5 else "fail"
+        st.markdown(f"""
+        <div class="score-card {cls}">
+            <span class="axis-name">{kr}</span>
+            <span class="axis-score">{score}/10</span>
+            <div class="axis-comment">{sc.get('comment', '')}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    cs1, cw1 = st.columns(2)
+    with cs1:
+        st.markdown("**핵심 강점**")
+        for s in hk.get("key_strengths", []):
+            st.markdown(f"- {s}")
+    with cw1:
+        st.markdown("**핵심 약점**")
+        for w in hk.get("key_weaknesses", []):
+            st.markdown(f"- {w}")
+
+    st.markdown("**보강 제안**")
+    for s in hk.get("improvement_suggestions", []):
+        st.markdown(f"- {s}")
+
+
+def page_stage_4():
+    section_header("📐 STEP 4 · 포맷 + 장르 + 시장 좌표", "FORMAT · GENRE · MARKET POSITION")
+    small_meta(
+        "5개 포맷 적합도 · 한국 장르 10분류 매핑 · 시장 좌표 4분류(TENTPOLE/MASTERCLASS/STREAMING/GENRE FEATURE)를 "
+        "한 번에 판정합니다. v1.3 신규 — 장르와 시장 좌표가 Creator Engine 룰팩 호출에 직접 활용됩니다."
+    )
+
+    inp = st.session_state["stage_1_input"]
+    logline = st.session_state.get("selected_logline", "")
+
+    if not st.session_state.get("stage_4_format"):
+        if st.button("📐 포맷 + 장르 + 시장 좌표 진단 실행", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 포맷 · 장르 · 시장 좌표 동시 판정 중... (30~60초)"):
+                # v1.4: Market Lens 동적 주입
+                market_lens_text = MLP.get_lens_text(inp.get("target_market", ""))
+                prompt_text = P.FORMAT_RECOMMEND_PROMPT.format(
+                    title=inp["title"], logline=logline,
+                    genre=inp["genre"],
+                    target_market=inp.get("target_market", ""),
+                    raw_idea=inp["raw_idea"],
+                    market_lens=market_lens_text,
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    return
+                st.session_state["stage_4_format"] = result
+                st.rerun()
+    else:
+        fm = st.session_state["stage_4_format"]
+
+        # ════════════════════════════════════════════════════
+        # v1.3 신규: 장르 매핑 + 시장 좌표 (상단 우선 표시)
+        # ════════════════════════════════════════════════════
+        genre_map = fm.get("genre_mapping", {})
+        market_pos = fm.get("market_position", {})
+
+        if genre_map or market_pos:
+            cgenre, cmarket = st.columns(2)
+
+            # 장르 매핑 카드
+            with cgenre:
+                st.markdown("#### 🎭 장르 분류 (v1.3)")
+                primary_g = genre_map.get("primary_genre", "")
+                secondary_g = genre_map.get("secondary_genre")
+                genre_text = primary_g
+                if secondary_g and secondary_g != "null":
+                    genre_text = f"{primary_g} × {secondary_g}"
+
+                st.markdown(f"""
+                <div style="border:2px solid #191970;border-radius:12px;padding:14px;background:#F0F2FF;margin-bottom:10px;">
+                    <div style="font-size:.7rem;color:#191970;font-weight:700;letter-spacing:.05em;">KOREAN GENRE</div>
+                    <div style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;color:#191970;margin-top:4px;">{genre_text}</div>
+                    <div style="font-size:.8rem;color:#555;margin-top:8px;line-height:1.5;">{genre_map.get('primary_reasoning', '')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                if secondary_g and secondary_g != "null" and genre_map.get("secondary_reasoning"):
+                    st.caption(f"복합 장르 결합: {genre_map['secondary_reasoning']}")
+                if genre_map.get("korean_genre_anchor"):
+                    st.caption(f"🇰🇷 {genre_map['korean_genre_anchor']}")
+
+            # 시장 좌표 카드
+            with cmarket:
+                st.markdown("#### 🎯 시장 좌표 (v1.3)")
+                primary_m = market_pos.get("primary_position", "")
+                secondary_m = market_pos.get("secondary_position")
+
+                pos_labels = {
+                    "TENTPOLE": ("TENTPOLE", "메이저 영화 흥행", "#191970"),
+                    "MASTERCLASS": ("MASTERCLASS", "거장 감독 제안", "#7B1FA2"),
+                    "STREAMING": ("STREAMING", "OTT 시리즈", "#E91E63"),
+                    "GENRE_FEATURE": ("GENRE FEATURE", "중·소형 장르 영화", "#00897B"),
+                }
+                label, sub, color = pos_labels.get(primary_m, (primary_m, "", "#191970"))
+
+                st.markdown(f"""
+                <div style="border:2px solid {color};border-radius:12px;padding:14px;background:#FFFEF5;margin-bottom:10px;">
+                    <div style="font-size:.7rem;color:{color};font-weight:700;letter-spacing:.05em;">MARKET POSITION</div>
+                    <div style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;color:{color};margin-top:4px;">{label}</div>
+                    <div style="font-size:.75rem;color:#666;font-style:italic;">{sub}</div>
+                    <div style="font-size:.8rem;color:#555;margin-top:8px;line-height:1.5;">{market_pos.get('primary_reasoning', '')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if secondary_m and secondary_m != "null":
+                    sec_label = pos_labels.get(secondary_m, (secondary_m, "", ""))[0]
+                    st.caption(f"2순위 좌표: **{sec_label}** — {market_pos.get('secondary_reasoning', '')}")
+
+                buyers = market_pos.get("target_buyers", [])
+                if buyers:
+                    st.caption("**판매 대상**: " + " / ".join(buyers))
+
+                if market_pos.get("production_implications"):
+                    with st.expander("제작 영향", expanded=False):
+                        st.markdown(market_pos["production_implications"])
+
+            st.markdown("---")
+
+        # ════════════════════════════════════════════════════
+        # 기존: 5개 포맷 적합도
+        # ════════════════════════════════════════════════════
+        st.markdown("#### 📊 5개 포맷 적합도")
+        fs = fm.get("format_scores", {})
+        format_kr = {
+            "feature_film": "장편 영화", "ott_series": "OTT 시리즈",
+            "mini_series": "미니시리즈", "short_form": "숏폼 드라마", "web_novel": "웹소설"
+        }
+
+        for k, kr in format_kr.items():
+            f = fs.get(k, {})
+            score = f.get("score", 0)
+            cls = "pass" if score >= 7 else "warn" if score >= 5 else "fail"
+            st.markdown(f"""
+            <div class="score-card {cls}">
+                <span class="axis-name">{kr}</span>
+                <span class="axis-score">{score}/10</span>
+                <div class="axis-comment">{f.get('reason', '')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("---")
+        primary = fm.get("primary_format_detail", {})
+        st.markdown(f"### ▶ 1순위 포맷: **{primary.get('format_name', '')}**")
+
+        ic = st.columns(3)
+        with ic[0]:
+            if primary.get("episode_count"):
+                st.metric("회차", primary["episode_count"])
+        with ic[1]:
+            if primary.get("runtime_per_episode"):
+                st.metric("회당 분량", primary["runtime_per_episode"])
+        with ic[2]:
+            if primary.get("total_runtime"):
+                st.metric("전체 분량", primary["total_runtime"])
+
+        st.markdown("**IP 빌딩 전략**")
+        st.markdown(f'<div class="callout">{fm.get("ip_building_strategy", "")}</div>', unsafe_allow_html=True)
+
+        if fm.get("unsuitable_formats"):
+            st.markdown("**부적합 포맷**")
+            for u in fm["unsuitable_formats"]:
+                st.markdown(f"- **{u['format']}**: {u['reason']}")
+
+        st.markdown("---")
+        cb, cr, cn = st.columns([1, 1, 2])
+        with cb:
+            if st.button("← 이전"):
+                st.session_state["current_stage"] = 3
+                st.rerun()
+        with cr:
+            if st.button("재실행"):
+                st.session_state["stage_4_format"] = None
+                st.rerun()
+        with cn:
+            if st.button("Reference로 →", type="primary", use_container_width=True):
+                st.session_state["current_stage"] = 5
+                st.rerun()
+
+        # ── 진행 상태 백업 ──
+        st.markdown("---")
+        render_progress_save_button(stage_num=4)
+
+
+def page_stage_5():
+    section_header("🔍 STEP 5 · 레퍼런스 매핑", "SIMILAR 5 + DIFFERENTIATION")
+    small_meta("유사작 5편 발굴 + 차별점 + 치명적 유사작 검증.")
+    
+    inp = st.session_state["stage_1_input"]
+    logline = st.session_state.get("selected_logline", "")
+    fm = st.session_state["stage_4_format"]
+    primary_format = fm.get("primary_format_detail", {}).get("format_name", inp["format"])
+    
+    if not st.session_state.get("stage_5_reference"):
+        if st.button("🔍 Reference 매핑 실행", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 유사작 5편 분석 중..."):
+                # v1.4: Market Lens 동적 주입
+                market_lens_text = MLP.get_lens_text(inp.get("target_market", ""))
+                prompt_text = P.REFERENCE_MAPPING_PROMPT.format(
+                    title=inp["title"], logline=logline,
+                    genre=inp["genre"], format=primary_format,
+                    target_market=inp.get("target_market", ""),
+                    raw_idea=inp["raw_idea"],
+                    market_lens=market_lens_text,
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    return
+                st.session_state["stage_5_reference"] = result
+                st.rerun()
+    else:
+        rf = st.session_state["stage_5_reference"]
+        for ref in rf.get("references", []):
+            st.markdown(f"### 《{ref['title']}》")
+            st.caption(f"{ref.get('year', '')} · {ref.get('country', '')} · {ref.get('format', '')} · 유사 차원: {ref.get('similarity_axis', '')}")
+            st.markdown(f"**공통점**: {ref.get('common_points', '')}")
+            st.markdown(f"**차별점**: {ref.get('differentiation', '')}")
+            st.markdown("---")
+        
+        warn = rf.get("lethal_similarity_warning", {})
+        if warn.get("exists"):
+            st.error(f"⚠ **치명적 유사작 경고**\n\n{warn.get('details', '')}")
+        else:
+            st.success(f"✓ **치명적 유사작 없음** — {warn.get('details', '안전')}")
+        
+        st.markdown("**차별화 요약**")
+        st.markdown(f'<div class="callout">{rf.get("differentiation_summary", "")}</div>', unsafe_allow_html=True)
+        
+        st.markdown("**투자자 미팅용 답변**")
+        st.markdown(f'> {rf.get("investor_pitch_answer", "")}')
+        
+        st.markdown("---")
+        cb, cr, cn = st.columns([1, 1, 2])
+        with cb:
+            if st.button("← 이전"):
+                st.session_state["current_stage"] = 4
+                st.rerun()
+        with cr:
+            if st.button("재실행"):
+                st.session_state["stage_5_reference"] = None
+                st.rerun()
+        with cn:
+            if st.button("Market 진단으로 →", type="primary", use_container_width=True):
+                st.session_state["current_stage"] = 6
+                st.rerun()
+
+        # ── 진행 상태 백업 ──
+        st.markdown("---")
+        render_progress_save_button(stage_num=5)
+
+
+def page_stage_6():
+    section_header("📊 STEP 6 · 시장성 진단", "3 MARKET STARS")
+    small_meta("한국·글로벌·OTT 3개 시장을 동시에 별점 평가합니다.")
+    
+    inp = st.session_state["stage_1_input"]
+    logline = st.session_state.get("selected_logline", "")
+    fm = st.session_state["stage_4_format"]
+    primary_format = fm.get("primary_format_detail", {}).get("format_name", inp["format"])
+    
+    if not st.session_state.get("stage_6_market"):
+        if st.button("📊 Market 진단 실행", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 3개 시장 진단 중..."):
+                # v1.4: Market Lens 동적 주입
+                market_lens_text = MLP.get_lens_text(inp.get("target_market", ""))
+                prompt_text = P.MARKET_DIAGNOSTIC_PROMPT.format(
+                    title=inp["title"], logline=logline,
+                    genre=inp["genre"], primary_format=primary_format,
+                    target_market=inp.get("target_market", ""),
+                    raw_idea=inp["raw_idea"],
+                    market_lens=market_lens_text,
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    return
+                st.session_state["stage_6_market"] = result
+                st.rerun()
+    else:
+        mk = st.session_state["stage_6_market"]
+        
+        # v1.4.1: Market Lens 기반 동적 라벨
+        # 우선순위 1: Sonnet 출력의 market_lens_applied
+        # 우선순위 2: target_market에서 직접 매핑 (fallback)
+        lens_applied = mk.get("market_lens_applied", {})
+        primary_market_code = lens_applied.get("primary_market", "")
+        if not primary_market_code:
+            primary_market_code = MLP.get_primary_market(inp.get("target_market", ""))
+        
+        # 1차 시장 코드 → 한글 라벨 + 국기 이모지
+        market_label_map = {
+            "KR": ("한국 시장", "🇰🇷"),
+            "JP": ("일본 시장", "🇯🇵"),
+            "ID": ("인도네시아 시장", "🇮🇩"),
+        }
+        primary_label, primary_flag = market_label_map.get(
+            primary_market_code, ("한국 시장", "🇰🇷")
+        )
+        
+        c1, c2, c3 = st.columns(3)
+        for col, key, label in [
+            (c1, "domestic_market", primary_label),
+            (c2, "global_market", "글로벌 시장"),
+            (c3, "ott_market", "OTT 시장"),
+        ]:
+            stars = mk.get(key, {}).get("stars", 0)
+            with col:
+                st.markdown(f"""
+                <div class="metric-tile">
+                    <div class="num">{'★' * stars}</div>
+                    <div class="label">{label}</div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        dom = mk.get("domestic_market", {})
+        # domestic_market.market_name이 있으면 우선 사용 (Sonnet이 채워준 값)
+        domestic_market_name = dom.get("market_name", primary_label.replace(" 시장", ""))
+        with st.expander(f"{primary_flag} {domestic_market_name} 시장 (Domestic)", expanded=True):
+            ta = dom.get("target_audience", {})
+            st.markdown(f"**타겟**: {ta.get('gender', '')} {ta.get('age_range', '')}")
+            st.markdown(f"  └ {ta.get('psychographic', '')}")
+            st.markdown(f"**예산**: {dom.get('budget_estimate', '')}")
+            st.markdown(f"**유통**: {', '.join(dom.get('distribution', []))}")
+            st.markdown(f"**IP 확장**: {', '.join(dom.get('ip_extension_potential', []))}")
+        
+        # v1.4.1: market_lens_applied 정보 표시 (있을 때)
+        if lens_applied:
+            with st.expander("🎯 Market Lens 적용 정보", expanded=False):
+                st.markdown(f"**1차 시장**: {market_label_map.get(lens_applied.get('primary_market', ''), ('-', ''))[0]}")
+                sec = lens_applied.get("secondary_market")
+                if sec:
+                    st.markdown(f"**2차 시장**: {market_label_map.get(sec, ('-', ''))[0]}")
+                if lens_applied.get("japan_doc_mode"):
+                    st.markdown(f"**JP_DOC 모드**: 활성화")
+                    track = lens_applied.get("japan_track", "")
+                    st.markdown(f"**일본 진입 트랙**: {track}")
+                    reasoning = lens_applied.get("japan_track_reasoning", "")
+                    if reasoning:
+                        st.markdown(f"  └ {reasoning}")
+        
+        glb = mk.get("global_market", {})
+        with st.expander("🌏 글로벌 시장 (International)", expanded=True):
+            st.markdown(f"**1차 타겟**: {glb.get('primary_target_country', '')}")
+            st.markdown(f"**어필 포인트**: {glb.get('global_appeal_strength', '')}")
+            st.markdown(f"**진입 경로**: {', '.join(glb.get('entry_path', []))}")
+            st.markdown(f"**약점**: {glb.get('weakness', '')}")
+        
+        ott = mk.get("ott_market", {})
+        with st.expander("📺 OTT 시장 (Platform)", expanded=True):
+            fc = ott.get("first_choice_platform", {})
+            sc = ott.get("second_choice_platform", {})
+            st.markdown(f"**1순위**: {fc.get('name', '')}")
+            st.markdown(f"  └ {fc.get('reason', '')}")
+            st.markdown(f"**2순위**: {sc.get('name', '')}")
+            st.markdown(f"  └ {sc.get('reason', '')}")
+            st.markdown(f"**최적 회차**: {ott.get('optimal_episode_count', '')}")
+            st.markdown(f"**경쟁 분석**: {ott.get('competition_analysis', '')}")
+        
+        timing = mk.get("timing_fit", {})
+        st.markdown(f"### 시기적 적합성: {'★' * timing.get('score', 0)}")
+        st.markdown(f'<div class="callout">{timing.get("reason", "")}</div>', unsafe_allow_html=True)
+        
+        st.markdown("### ⚠ 위험 신호")
+        for r in mk.get("risk_signals", []):
+            st.markdown(f"- {r}")
+        
+        st.markdown("---")
+        cb, cr, cn = st.columns([1, 1, 2])
+        with cb:
+            if st.button("← 이전"):
+                st.session_state["current_stage"] = 5
+                st.rerun()
+        with cr:
+            if st.button("재실행"):
+                st.session_state["stage_6_market"] = None
+                st.rerun()
+        with cn:
+            if st.button("최종 판정으로 → (Opus)", type="primary", use_container_width=True):
+                st.session_state["current_stage"] = 7
+                st.rerun()
+
+        # ── 진행 상태 백업 (Stage 7 직전이라 매우 권장) ──
+        st.markdown("---")
+        st.warning("⚠ Stage 7(Opus 최종 판정) 진행 전 백업을 강력히 권장합니다. 에러 발생 시 이 JSON으로 1~6단계 복원 가능.")
+        render_progress_save_button(stage_num=6)
+
+
+def page_stage_7():
+    section_header("⚖ STEP 7 · 최종 판정", "OPUS · GO / CONDITIONAL / NOGO")
+    small_meta("Opus 4.7이 6개 진단 결과를 종합하여 최종 판정과 LOCKED 시드 패키지를 확정합니다.")
+
+    inp = st.session_state["stage_1_input"]
+
+    if not st.session_state.get("stage_7_verdict"):
+        st.markdown("""
+        <div class="callout">
+        <b>Opus 4.7 최종 판정</b><br>
+        모든 진단 데이터를 종합하여 GO/CONDITIONAL/NOGO 판정을 내리고, Creator Engine 입력용 LOCKED 시드 패키지를 확정합니다.<br>
+        <span style="color:#191970;font-weight:600;">v1.1 — Creator Engine v2.5.2 정합:</span> 핵심 결정·음악 규약·시각 모티프·결말 형식·Creator 의제 5개 신규 LOCKED 영역도 함께 산출됩니다.<br>
+        소요 시간: 60~90초
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("⚖ Opus 최종 판정 실행", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 종합 판정 중... (60~90초)"):
+                prompt_text = P.FINAL_VERDICT_PROMPT.format(
+                    title=inp["title"], raw_idea=inp["raw_idea"],
+                    logline_data=json.dumps(st.session_state["stage_2_logline"], ensure_ascii=False, indent=2),
+                    hook_data=json.dumps(st.session_state["stage_3_hook"], ensure_ascii=False, indent=2),
+                    format_data=json.dumps(st.session_state["stage_4_format"], ensure_ascii=False, indent=2),
+                    reference_data=json.dumps(st.session_state["stage_5_reference"], ensure_ascii=False, indent=2),
+                    market_data=json.dumps(st.session_state["stage_6_market"], ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                    return
+                st.session_state["stage_7_verdict"] = result
+                st.rerun()
+    else:
+        vd = st.session_state["stage_7_verdict"]
+        verdict = vd.get("final_verdict", "")
+        
+        if verdict == "GO":
+            st.markdown("""
+            <div class="verdict-box go">
+                <p class="verdict-label" style="color:#2E7D32;">🟢 GO</p>
+            </div>
+            """, unsafe_allow_html=True)
+        elif verdict == "CONDITIONAL":
+            st.markdown("""
+            <div class="verdict-box cond">
+                <p class="verdict-label" style="color:#F9A825;">🟡 CONDITIONAL</p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="verdict-box nogo">
+                <p class="verdict-label" style="color:#C62828;">🔴 NOGO</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("### 판정 사유")
+        st.markdown(f'<div class="callout">{vd.get("verdict_reasoning", "")}</div>', unsafe_allow_html=True)
+        
+        if vd.get("conditional_requirements"):
+            st.markdown("### 충족 조건")
+            for c in vd["conditional_requirements"]:
+                st.markdown(f"- {c}")
+        
+        if vd.get("nogo_alternative"):
+            st.markdown("### 대안 제시")
+            st.warning(vd["nogo_alternative"])
+        
+        cd, cp = st.columns(2)
+        with cd:
+            st.markdown("**✓ 확정된 결정**")
+            for k in vd.get("key_decisions_made", []):
+                st.markdown(f"- {k}")
+        with cp:
+            st.markdown("**? Creator Engine에서 결정할 것**")
+            for q in vd.get("pending_decisions_for_creator", []):
+                st.markdown(f"- {q}")
+        
+        st.markdown("---")
+        st.markdown("### 임원 요약 (Executive Summary)")
+        st.success(vd.get("executive_summary", ""))
+        
+        st.markdown("---")
+        section_header("🔑 LOCKED 시드 패키지", "LOCKED SEED PACKAGE")
+        
+        seed = vd.get("locked_seed_package", {})
+        
+        st.markdown(f"""
+        <div class="locked-card">
+            <div class="field-label">Project ID</div>
+            <div class="field-value">{seed.get('project_id', '')}</div>
+            <div class="field-label">Title (KR / EN)</div>
+            <div class="field-value">{seed.get('title_kr', '')} / {seed.get('title_en', '')}</div>
+            <div class="field-label">Locked Logline</div>
+            <div class="field-value">{seed.get('locked_logline', '')}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        cg, cf = st.columns(2)
+        with cg:
+            gn = seed.get("locked_genre", {})
+            st.markdown("**Genre**")
+            st.markdown(f"- Primary: {gn.get('primary', '')}")
+            st.markdown(f"- Secondary: {gn.get('secondary', '')}")
+            if gn.get("tertiary"):
+                st.markdown(f"- Tertiary: {gn['tertiary']}")
+        with cf:
+            ft = seed.get("locked_format", {})
+            st.markdown("**Format**")
+            st.markdown(f"- Primary: {ft.get('primary', '')}")
+            _conf = ft.get("confidence", "")
+            if _conf:
+                st.markdown(f"- Confidence: {_conf}")
+            if ft.get("episode_count"):
+                st.markdown(f"- Episodes: {ft['episode_count']}")
+            if ft.get("runtime"):
+                st.markdown(f"- Runtime: {ft['runtime']}")
+            if ft.get("platform"):
+                st.markdown(f"- Platform: {ft['platform']}")
+            if ft.get("primary") == "미지정":
+                st.caption(
+                    "포맷이 미지정 상태로 인계됩니다. 확신 없는 조기 확정보다 안전하며, "
+                    "Creator Engine이 Brainstorm·Core를 본 뒤 확정합니다."
+                )
+        
+        ct, cth = st.columns(2)
+        with ct:
+            tg = seed.get("locked_target", {})
+            st.markdown("**Target**")
+            st.markdown(f"- Domestic: {tg.get('domestic', '')}")
+            st.markdown(f"- Global: {tg.get('global', '')}")
+        with cth:
+            th = seed.get("locked_theme", {})
+            st.markdown("**Theme**")
+            st.markdown(f"- Surface: {th.get('surface', '')}")
+            st.markdown(f"- Deep: {th.get('deep', '')}")
+        
+        ms = seed.get("locked_market_stars", {})
+        st.markdown("**Score Summary**")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Hook", f"{seed.get('locked_hook_score', 0)}/50")
+        with c2:
+            st.metric("한국", "★" * ms.get("domestic", 0))
+        with c3:
+            st.metric("글로벌", "★" * ms.get("global", 0))
+        with c4:
+            st.metric("OTT", "★" * ms.get("ott", 0))
+        
+        st.markdown("**Risks to Address (Creator Engine 진행 시 다룰 것)**")
+        for r in seed.get("locked_risks_to_address", []):
+            st.markdown(f"- {r}")
+
+        # ═══════════════════════════════════════════════════════
+        # v1.1 — Creator Engine v2.5.2 정합 5개 신규 LOCKED 영역
+        # ═══════════════════════════════════════════════════════
+        st.markdown("---")
+        section_header(
+            "🔒 v1.1 신규 LOCKED 영역",
+            "CREATOR ENGINE v2.5.2 ABSORPTION KEYS"
+        )
+        st.caption(
+            "Creator Engine v2.5.2가 작품 본질로 절대 보존하는 5개 영역. "
+            "「오랜만에」 검증에서 발견된 핵심 모티프 휘발(61%)을 차단하기 위해 도입."
+        )
+
+        # ① locked_core_decisions
+        core_decisions = seed.get("locked_core_decisions", []) or []
+        with st.expander(
+            f"① 확정된 핵심 결정 (locked_core_decisions) · {len(core_decisions)}건",
+            expanded=bool(core_decisions),
+        ):
+            if not core_decisions:
+                st.caption("이 작품에는 별도로 LOCK된 핵심 결정이 없습니다 (빈 배열).")
+            else:
                 for d in core_decisions:
                     if isinstance(d, dict):
                         cat = d.get("category", "")
                         rule = d.get("rule", "") or d.get("decision", "")
-                        if cat and rule:
-                            _lock_lines.append(f"- [{cat}] {rule}")
-                        elif rule:
-                            _lock_lines.append(f"- {rule}")
-                    elif isinstance(d, str):
-                        _lock_lines.append(f"- {d}")
-
-            # 2. 음악 사용 규약 (장르 특화 — 멜로/음악·청춘물에서 자주 나타남)
-            music_rules = _seed_locked.get("locked_music_rules", {})
-            if music_rules:
-                _lock_lines.append("")
-                _lock_lines.append("[★ 음악 사용 규약 LOCK ★]")
-                if isinstance(music_rules, dict):
-                    for k, v in music_rules.items():
-                        if isinstance(v, list):
-                            for item in v:
-                                _lock_lines.append(f"- [{k}] {item}")
+                        rationale = d.get("rationale", "")
+                        if cat:
+                            st.markdown(f"**[{cat}]** {rule}")
                         else:
-                            _lock_lines.append(f"- [{k}] {v}")
-                elif isinstance(music_rules, list):
-                    for r in music_rules:
-                        _lock_lines.append(f"- {r}")
-                elif isinstance(music_rules, str):
-                    _lock_lines.append(f"- {music_rules}")
+                            st.markdown(f"- {rule}")
+                        if rationale:
+                            st.caption(f"근거: {rationale}")
+                    elif isinstance(d, str):
+                        st.markdown(f"- {d}")
 
-            # 3. 시각 모티프 (오브제 연결핀 — 두 타임라인/두 세계 연결의 시각 장치)
-            visual_motifs = _seed_locked.get("locked_visual_motifs", [])
-            if isinstance(visual_motifs, list) and visual_motifs:
-                _lock_lines.append("")
-                _lock_lines.append("[★ 시각 모티프 LOCK ★ — Treatment·Scene Design에서 보존]")
+        # ② locked_music_rules
+        music_rules = seed.get("locked_music_rules", {}) or {}
+        with st.expander(
+            f"② 음악 사용 규약 (locked_music_rules) · {'있음' if music_rules else '없음'}",
+            expanded=bool(music_rules),
+        ):
+            if not music_rules:
+                st.caption("이 작품에는 음악 사용 규약이 없습니다 (빈 객체). 액션·스릴러·호러에서 자주 발생.")
+            elif isinstance(music_rules, dict):
+                for k, v in music_rules.items():
+                    if isinstance(v, list):
+                        st.markdown(f"**{k}**")
+                        for item in v:
+                            st.markdown(f"- {item}")
+                    else:
+                        st.markdown(f"**{k}**: {v}")
+            elif isinstance(music_rules, list):
+                for r in music_rules:
+                    st.markdown(f"- {r}")
+            else:
+                st.markdown(str(music_rules))
+
+        # ③ locked_visual_motifs
+        visual_motifs = seed.get("locked_visual_motifs", []) or []
+        with st.expander(
+            f"③ 시각 모티프 (locked_visual_motifs) · {len(visual_motifs)}건",
+            expanded=bool(visual_motifs),
+        ):
+            if not visual_motifs:
+                st.caption("이 작품에는 LOCK된 시각 모티프가 없습니다 (빈 배열).")
+            else:
                 for m in visual_motifs:
                     if isinstance(m, dict):
                         motif = m.get("motif", "") or m.get("name", "")
                         function = m.get("function", "") or m.get("role", "")
                         if motif and function:
-                            _lock_lines.append(f"- {motif} → {function}")
+                            st.markdown(f"**{motif}** → {function}")
                         elif motif:
-                            _lock_lines.append(f"- {motif}")
+                            st.markdown(f"- {motif}")
                     elif isinstance(m, str):
-                        _lock_lines.append(f"- {m}")
+                        st.markdown(f"- {m}")
 
-            # 4. 결말 형식 (헤어짐/결합/모호 등 결말의 본질 LOCK)
-            ending_form = _seed_locked.get("locked_ending_form", {})
-            if ending_form:
-                _lock_lines.append("")
-                _lock_lines.append("[★ 결말 형식 LOCK ★]")
-                if isinstance(ending_form, dict):
-                    if ending_form.get("type"):
-                        _lock_lines.append(f"- 결말 유형: {ending_form['type']}")
-                    if ending_form.get("emotional_resolution"):
-                        _lock_lines.append(f"- 정서적 해소: {ending_form['emotional_resolution']}")
-                    if ending_form.get("final_image"):
-                        _lock_lines.append(f"- 마지막 이미지: {ending_form['final_image']}")
-                    if ending_form.get("forbidden"):
-                        _lock_lines.append(f"- 금지 패턴: {ending_form['forbidden']}")
-                elif isinstance(ending_form, str):
-                    _lock_lines.append(f"- {ending_form}")
+        # ④ locked_ending_form
+        ending_form = seed.get("locked_ending_form", {}) or {}
+        with st.expander(
+            f"④ 결말 형식 (locked_ending_form) · {'LOCK됨' if ending_form else '미확정'}",
+            expanded=bool(ending_form),
+        ):
+            if not ending_form:
+                st.caption("결말 형식이 LOCK되지 않았습니다 (빈 객체). Creator Engine이 결정.")
+            elif isinstance(ending_form, dict):
+                if ending_form.get("type"):
+                    st.markdown(f"**결말 유형**: {ending_form['type']}")
+                if ending_form.get("emotional_resolution"):
+                    st.markdown(f"**정서적 해소**: {ending_form['emotional_resolution']}")
+                if ending_form.get("final_image"):
+                    st.markdown(f"**마지막 이미지**: {ending_form['final_image']}")
+                if ending_form.get("forbidden"):
+                    st.warning(f"**금지 패턴**: {ending_form['forbidden']}")
+            else:
+                st.markdown(str(ending_form))
 
-            # 5. Creator Engine 결정 의제 (Idea가 미해결로 남긴 핵심 질문 — Creator가 답해야 함)
-            creator_questions = _seed_locked.get("locked_creator_questions", [])
-            if isinstance(creator_questions, list) and creator_questions:
-                _lock_lines.append("")
-                _lock_lines.append("[Creator Engine에서 답해야 할 핵심 의제]")
+        # ⑤ locked_creator_questions
+        creator_questions = seed.get("locked_creator_questions", []) or []
+        with st.expander(
+            f"⑤ Creator Engine 결정 의제 (locked_creator_questions) · {len(creator_questions)}건",
+            expanded=bool(creator_questions),
+        ):
+            if not creator_questions:
+                st.caption("Creator Engine이 답할 의제가 없습니다 (빈 배열).")
+            else:
                 for q in creator_questions:
                     if isinstance(q, dict):
                         question = q.get("question", "")
-                        options = q.get("options", [])
-                        if question:
-                            line = f"- {question}"
-                            if isinstance(options, list) and options:
-                                line += f" (후보: {' / '.join(str(o) for o in options)})"
-                            _lock_lines.append(line)
+                        options = q.get("options", []) or []
+                        importance = q.get("importance", "")
+                        line = f"**{question}**"
+                        if importance:
+                            badge_color = {
+                                "high": "#C62828",
+                                "medium": "#F9A825",
+                                "low": "#2E7D32",
+                            }.get(importance.lower(), "#666")
+                            line += (
+                                f" <span style='background:{badge_color};color:white;"
+                                f"font-size:.7rem;padding:2px 6px;border-radius:4px;"
+                                f"margin-left:6px;'>{importance.upper()}</span>"
+                            )
+                        st.markdown(line, unsafe_allow_html=True)
+                        if options:
+                            st.caption(f"후보: {' / '.join(str(o) for o in options)}")
                     elif isinstance(q, str):
-                        _lock_lines.append(f"- {q}")
+                        st.markdown(f"- {q}")
 
-            _seed_default_locked = "\n".join(_lock_lines)
-
-        col1, col2 = st.columns([2, 1])
-
-        with col1:
-            title_input = st.text_input(
-                "프로젝트 제목",
-                value=_seed_default_title,
-                placeholder="예: 인도네시아 물귀신 프로젝트"
-            )
-            idea_input = st.text_area(
-                "💡 아이디어",
-                value=_seed_default_idea,
-                height=120,
-                placeholder=(
-                    "자유롭게 입력\n"
-                    "예: 인도네시아용 물귀신 이야기\n"
-                    "예: 은퇴한 킬러가 다시 돌아오는 이야기\n"
-                    "예: 40대 여형사, 연쇄살인범이 딸의 담임교사"
-                )
-            )
-
-        # ── LOCKED 설정 (v2.3: OPEN 필드 폐지) ──
-        with st.expander("🔒 설정 잠금 (LOCKED)",
-                          expanded=bool(_seed_default_locked)):
-            st.caption(
-                "LOCKED = 파이프라인 전 과정에서 절대 변경 불가. "
-                "여기에 명시되지 않은 모든 디테일은 엔진이 자유롭게 창작합니다. "
-                "한 줄에 하나씩 입력하세요."
-            )
-            locked_input = st.text_area(
-                "🔒 LOCKED (반드시 지킬 것만 명시)",
-                value=_seed_default_locked,
-                height=180,
-                placeholder=(
-                    "한 줄에 하나씩:\n"
-                    "장르: 로맨틱 코미디 (다른 장르 전환 금지)\n"
-                    "주인공: 강유진 (여, 미혼)\n"
-                    "핵심 관계: 아버지의 상속 조건\n"
-                    "공간: 쿠킹 클래스 (아이반 + 성인반)\n"
-                    "테마: 사람은 요리처럼 섞을 수 없다\n"
-                    "엔딩 방향: 한 명 선택 아닌 자기 발견"
-                )
-            )
-            # v2.3: OPEN 필드 폐지 — 하위 호환성을 위해 빈 리스트 유지
-            open_input = ""
-
-
-        with col2:
-            # 장르: 시드 default를 selectbox 옵션과 매칭, 없으면 "미지정"
-            _genre_options = ["미지정", "범죄/스릴러", "드라마", "액션", "로맨스", "코미디",
-                              "로맨틱 코미디", "호러/공포", "SF", "판타지", "시대극/사극", "느와르",
-                              "미스터리", "전쟁", "뮤지컬", "다큐/논픽션"]
-            _genre_default_idx = 0
-            for i, opt in enumerate(_genre_options):
-                if _seed_default_genre and (_seed_default_genre == opt or opt in _seed_default_genre or _seed_default_genre in opt):
-                    _genre_default_idx = i
-                    break
-            genre_input = st.selectbox(
-                "🎬 장르",
-                _genre_options,
-                index=_genre_default_idx,
-            )
-
-            _market_options = ["미지정", "한국", "북미/미국", "일본", "중국",
-                               "동남아", "유럽", "중동", "글로벌", "직접 입력"]
-            _market_default_idx = 0
-            for i, opt in enumerate(_market_options):
-                if _seed_default_market and (_seed_default_market == opt or opt in _seed_default_market or _seed_default_market in opt):
-                    _market_default_idx = i
-                    break
-            market_type = st.selectbox(
-                "🌏 타겟 시장",
-                _market_options,
-                index=_market_default_idx,
-            )
-
-            market_custom = ""
-            if market_type == "직접 입력":
-                market_custom = st.text_input(
-                    "시장 직접 입력",
-                    value=(_seed_default_market if _seed_default_market not in _market_options else ""),
-                    placeholder="예: 인도네시아+한국 공동제작"
-                )
-
-            _format_options = ["미지정", "영화", "시리즈", "미니시리즈(4~8화)",
-                               "웹툰", "웹소설", "숏폼", "다큐멘터리", "애니메이션"]
-            _format_default_idx = 0
-            for i, opt in enumerate(_format_options):
-                if _seed_default_format and (_seed_default_format == opt or opt in _seed_default_format or _seed_default_format in opt):
-                    _format_default_idx = i
-                    break
-            format_input = st.selectbox(
-                "📐 포맷",
-                _format_options,
-                index=_format_default_idx,
-            )
-
-            st.markdown("##### 🏛️ 특수 규칙")
-            fact_based_input = st.checkbox(
-                "실화 배경 작품",
-                value=False,
-                help="실제 사건/인물/시대를 배경으로 하는 작품. 실명 비사용 + 사실성 균형, 명예훼손·인격권 차단 규칙이 자동 적용됨."
-            )
-            historical_input = st.checkbox(
-                "역사영화",
-                value=False,
-                help="시대극/사극. 시대 언어의 균형, 공간의 주인공화, 선악 이원 구도 회피 등 역사영화 전용 규칙 적용."
-            )
-            film_type_input = ""
-            if historical_input:
-                film_type_input = st.selectbox(
-                    "역사영화 유형",
-                    ["정통", "팩션", "퓨전"],
-                    help="정통: 〈남한산성〉〈1987〉〈서울의 봄〉 / 팩션: 〈왕의 남자〉〈광해〉〈암살〉 / 퓨전: 〈조선명탐정〉〈전우치〉"
-                )
-
-        if st.button("🚀 프로젝트 생성", use_container_width=True, disabled=not idea_input.strip()):
-            market_final = market_custom if market_type == "직접 입력" else market_type
-            project_id = f"p_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-            # LOCKED 파싱 (줄 단위). v2.3: OPEN 필드는 폐지되어 빈 리스트로 유지 (하위 호환성)
-            locked_list = [line.strip() for line in locked_input.strip().split("\n") if line.strip()] if locked_input.strip() else []
-            open_list = []  # v2.3: OPEN 필드 폐지
-
-            st.session_state.projects[project_id] = {
-                "project_id": project_id,
-                "title": title_input or "새 프로젝트",
-                "idea_text": idea_input,
-                "genre": genre_input,
-                "target_market": market_final,
-                "format": format_input,
-                "fact_based": fact_based_input,
-                "historical": historical_input,
-                "film_type": film_type_input,
-                "locked_items": locked_list,
-                "open_items": open_list,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "research": None,
-                "brainstorm_cards": None,
-                "brainstorm_analysis": None,
-                "core": None,
-                "core_gate": None,
-                "char_bible": None,
-                "structure_story": None,
-                "structure_diag": None,
-                "structure_gate": None,
-                "structure_prose": None,
-                "scene_design": None,
-                "treatment": None,
-                "treatment_gate": None,
-                "tone_doc": None,
-                "final_score": None,
-            }
-
-            st.session_state.cur = project_id
-            st.session_state.view = "project"
-            st.rerun()
-
-    # ─── 프로젝트 JSON 불러오기 (v2.3.5 신규) ───
-    with st.expander("📂 프로젝트 JSON 불러오기 (세션 복구)", expanded=False):
-        st.caption(
-            "이전 세션에서 저장한 프로젝트 JSON 파일을 업로드하면 해당 시점으로 복원됩니다. "
-            "Scene Design 완료 시점에 저장했다면 Treatment부터 이어서 진행 가능합니다."
-        )
-        uploaded_json = st.file_uploader(
-            "프로젝트 JSON 파일 선택",
-            type=["json"],
-            key="project_json_uploader",
-            help="Scene 완료 / Treatment 완료 / 최종완성 시점에 저장한 JSON 파일"
-        )
-
-        if uploaded_json is not None:
-            try:
-                json_str = uploaded_json.read().decode("utf-8")
-                result = load_project_from_json(json_str)
-                restored_project = result["project"]
-                meta = result["meta"]
-                warnings = result["warnings"]
-
-                # 정보 표시
-                st.markdown(
-                    f'<div class="callout">'
-                    f'<div class="cl">📋 불러올 프로젝트</div>'
-                    f'<b>{restored_project.get("title", "제목 없음")}</b><br>'
-                    f'{restored_project.get("genre", "")} · '
-                    f'{restored_project.get("target_market", "")} · '
-                    f'{restored_project.get("format", "")}<br>'
-                    f'<span style="font-size:.75rem;color:var(--dim)">'
-                    f'저장 시점: {meta.get("saved_at", "알 수 없음")} / '
-                    f'단계: {meta.get("stage", "알 수 없음")} / '
-                    f'엔진 버전: {meta.get("engine_version", "알 수 없음")}'
-                    f'</span></div>',
-                    unsafe_allow_html=True
-                )
-
-                # 경고 표시
-                for w in warnings:
-                    st.warning(w)
-
-                # 중복 ID 체크 및 복원 버튼
-                original_id = restored_project.get("project_id", "")
-                id_conflict = original_id in st.session_state.projects
-
-                if id_conflict:
-                    st.info(
-                        f"⚠️ 동일한 프로젝트 ID가 이미 존재합니다. "
-                        f"복원 시 새 ID를 부여하여 별도 프로젝트로 추가됩니다."
-                    )
-
-                if st.button("✅ 이 프로젝트 복원하기", type="primary", use_container_width=True):
-                    # 중복 방지: ID 충돌 시 새 ID 생성
-                    if id_conflict:
-                        new_id = f"proj_{int(datetime.now().timestamp() * 1000)}"
-                        restored_project["project_id"] = new_id
-                        restored_project["title"] = restored_project.get("title", "복원") + " (복원본)"
-                        restored_id = new_id
-                    else:
-                        restored_id = original_id
-
-                    # updated_at 갱신
-                    restored_project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-                    # 세션 상태에 주입
-                    st.session_state.projects[restored_id] = restored_project
-                    st.session_state.cur = restored_id
-
-                    # 단계별 적절한 view로 이동 (완료된 가장 높은 단계로)
-                    if restored_project.get("tone_doc"):
-                        st.session_state.view = "tone_doc"
-                    elif restored_project.get("treatment"):
-                        st.session_state.view = "treatment"
-                    elif restored_project.get("scene_design"):
-                        st.session_state.view = "scene_design"
-                    elif restored_project.get("structure_story"):
-                        st.session_state.view = "structure"
-                    elif restored_project.get("char_bible"):
-                        st.session_state.view = "char_bible"
-                    elif restored_project.get("core"):
-                        st.session_state.view = "core"
-                    else:
-                        st.session_state.view = "project"
-
-                    st.success(f"✅ '{restored_project['title']}' 복원 완료. 해당 단계로 이동합니다.")
-                    st.rerun()
-
-            except ValueError as e:
-                st.error(f"❌ 불러오기 실패: {e}")
-            except Exception as e:
-                st.error(f"❌ 예상치 못한 오류: {e}")
-
-    # 프로젝트 목록
-    if st.session_state.projects:
-        st.markdown("---")
-        st.markdown("### 📁 프로젝트")
-
-        for project_id, project in sorted(
-            st.session_state.projects.items(),
-            key=lambda x: x[1]["updated_at"],
-            reverse=True
+        # ────────────────────────────────────────────────────
+        # v1.2 신규 4개 LOCKED 영역 (Story Core 5원칙 + Hook&Punch)
+        # ────────────────────────────────────────────────────
+        # ⑥ locked_empathy_anchor
+        empathy = seed.get("locked_empathy_anchor", {}) or {}
+        with st.expander(
+            f"⑥ Empathy Anchor (locked_empathy_anchor · v1.2) · {'있음' if empathy else '없음'}",
+            expanded=bool(empathy),
         ):
-            col1, col2 = st.columns([5, 1])
+            if not empathy:
+                st.caption("이 시드는 v1.1 이전 버전입니다 (빈 객체). v1.2 신규 키 미적용.")
+            elif isinstance(empathy, dict):
+                if empathy.get("anchor_type"):
+                    st.markdown(f"**감정이입 유형**: {empathy['anchor_type']}")
+                if empathy.get("entry_point"):
+                    st.markdown(f"**진입점**: {empathy['entry_point']}")
+                if empathy.get("korean_reference"):
+                    st.markdown(f"🇰🇷 **한국 좌표**: {empathy['korean_reference']}")
+                if empathy.get("hollywood_reference"):
+                    st.markdown(f"🇺🇸 **할리우드 좌표**: {empathy['hollywood_reference']}")
 
-            with col1:
-                has_cards = "✅" if project.get("brainstorm_cards") else "—"
-                has_analysis = "✅" if project.get("brainstorm_analysis") else "—"
+        # ⑦ locked_hook_signature
+        hook_sig = seed.get("locked_hook_signature", {}) or {}
+        with st.expander(
+            f"⑦ Hook Signature (locked_hook_signature · v1.2) · {'있음' if hook_sig else '없음'}",
+            expanded=bool(hook_sig),
+        ):
+            if not hook_sig:
+                st.caption("Hook Signature가 LOCK되지 않았습니다 (v1.1 이전 시드).")
+            elif isinstance(hook_sig, dict):
+                if hook_sig.get("hook_one_liner"):
+                    st.markdown(f'<div style="background:#F0F2FF;border-left:3px solid #191970;padding:10px;font-weight:600;font-size:1.05rem;">"{hook_sig["hook_one_liner"]}"</div>', unsafe_allow_html=True)
+                if hook_sig.get("mechanism"):
+                    st.markdown(f"**메커니즘**: {hook_sig['mechanism']}")
+                if hook_sig.get("promise"):
+                    st.markdown(f"**약속**: {hook_sig['promise']}")
+                if hook_sig.get("differentiation"):
+                    st.markdown(f"**차별점**: {hook_sig['differentiation']}")
 
-                st.markdown(
-                    f'<div class="card">'
-                    f'<b>{project["title"]}</b><br>'
-                    f'<span style="font-size:.75rem;color:var(--dim)">'
-                    f'{project["genre"]} · {project["target_market"]} · {project["format"]} · '
-                    f'{project["updated_at"]}'
-                    f'<br>카드 {has_cards} · 분석 {has_analysis}'
-                    f'</span></div>',
-                    unsafe_allow_html=True
-                )
+        # ⑧ locked_punch_scene
+        punch = seed.get("locked_punch_scene", {}) or {}
+        with st.expander(
+            f"⑧ Punch Scene (locked_punch_scene · v1.2) · {'있음' if punch else '없음'}",
+            expanded=bool(punch),
+        ):
+            if not punch:
+                st.caption("Punch Scene이 LOCK되지 않았습니다 (v1.1 이전 시드).")
+            elif isinstance(punch, dict):
+                if punch.get("scene_description"):
+                    st.markdown(f'<div style="background:#FFFEF5;border-left:3px solid #FFCB05;padding:10px;font-size:.95rem;line-height:1.6;">{punch["scene_description"]}</div>', unsafe_allow_html=True)
+                meta_cols = []
+                if punch.get("dialogue_mode"):
+                    meta_cols.append(f"**대사 모드**: {punch['dialogue_mode']}")
+                if punch.get("final_shot"):
+                    meta_cols.append(f"**마지막 컷**: {punch['final_shot']}")
+                if punch.get("primary_emotion"):
+                    meta_cols.append(f"**정서**: {punch['primary_emotion']}")
+                if punch.get("placement"):
+                    meta_cols.append(f"**배치**: {punch['placement']}")
+                for line in meta_cols:
+                    st.markdown(line)
+                if punch.get("signature_potential"):
+                    sp = punch["signature_potential"]
+                    color = {"HIGH": "#2E7D32", "MEDIUM": "#F9A825", "LOW": "#999"}.get(sp, "#666")
+                    st.markdown(f"<span style='color:{color};font-weight:700;'>★ 시각적 서명 가능성: {sp}</span>", unsafe_allow_html=True)
 
-            with col2:
-                if st.button("열기 →", key=f"open_{project_id}"):
-                    st.session_state.cur = project_id
-                    st.session_state.view = "project"
-                    st.rerun()
+        # ⑨ locked_ending_promise
+        ending_promise = seed.get("locked_ending_promise", {}) or {}
+        with st.expander(
+            f"⑨ Ending Promise (locked_ending_promise · v1.2) · {'있음' if ending_promise else '없음'}",
+            expanded=bool(ending_promise),
+        ):
+            if not ending_promise:
+                st.caption("결말 약속이 LOCK되지 않았습니다 (v1.1 이전 시드).")
+            elif isinstance(ending_promise, dict):
+                if ending_promise.get("ending_type"):
+                    st.markdown(f"**결말 유형**: {ending_promise['ending_type']}")
+                if ending_promise.get("catharsis_mechanism"):
+                    st.markdown(f"**카타르시스 메커니즘**: {ending_promise['catharsis_mechanism']}")
+                if ending_promise.get("writer_intent"):
+                    st.markdown(f"**작가 의도**: {ending_promise['writer_intent']}")
+                if ending_promise.get("satisfactory_logic"):
+                    st.markdown(f"**만족 결말 논리**: {ending_promise['satisfactory_logic']}")
+
+        # ────────────────────────────────────────────────────
+        # v1.3 신규 2개 LOCKED 영역 (장르 + 시장 좌표)
+        # ────────────────────────────────────────────────────
+        # ⑩ locked_genre_primary
+        genre_primary = seed.get("locked_genre_primary", {}) or {}
+        with st.expander(
+            f"⑩ 장르 분류 (locked_genre_primary · v1.3) · {'있음' if genre_primary else '없음'}",
+            expanded=bool(genre_primary),
+        ):
+            if not genre_primary:
+                st.caption("v1.2 이전 시드입니다 (빈 객체). v1.3 신규 키 미적용.")
+            elif isinstance(genre_primary, dict):
+                primary_g = genre_primary.get("primary", "")
+                secondary_g = genre_primary.get("secondary")
+                genre_text = primary_g
+                if secondary_g and secondary_g not in ("null", None):
+                    genre_text = f"{primary_g} × {secondary_g}"
+                st.markdown(f'<div style="background:#F0F2FF;border-left:3px solid #191970;padding:10px;font-weight:600;font-size:1.05rem;">한국 장르 매핑: <b>{genre_text}</b></div>', unsafe_allow_html=True)
+                if genre_primary.get("reasoning"):
+                    st.markdown(f"**근거**: {genre_primary['reasoning']}")
+                if genre_primary.get("korean_genre_anchor"):
+                    st.caption(f"🇰🇷 {genre_primary['korean_genre_anchor']}")
+
+        # ⑪ locked_market_position
+        market_position = seed.get("locked_market_position", {}) or {}
+        with st.expander(
+            f"⑪ 시장 좌표 (locked_market_position · v1.3) · {'있음' if market_position else '없음'}",
+            expanded=bool(market_position),
+        ):
+            if not market_position:
+                st.caption("v1.2 이전 시드입니다 (빈 객체). v1.3 신규 키 미적용.")
+            elif isinstance(market_position, dict):
+                primary_m = market_position.get("primary", "")
+                secondary_m = market_position.get("secondary")
+                pos_color = {
+                    "TENTPOLE": "#191970",
+                    "MASTERCLASS": "#7B1FA2",
+                    "STREAMING": "#E91E63",
+                    "GENRE_FEATURE": "#00897B",
+                }.get(primary_m, "#191970")
+                st.markdown(f'<div style="background:#FFFEF5;border-left:3px solid {pos_color};padding:10px;font-weight:600;font-size:1.05rem;color:{pos_color};">시장 좌표: <b>{primary_m}</b></div>', unsafe_allow_html=True)
+                if secondary_m and secondary_m not in ("null", None):
+                    st.caption(f"2순위 대안: **{secondary_m}**")
+                if market_position.get("reasoning"):
+                    st.markdown(f"**근거**: {market_position['reasoning']}")
+                buyers = market_position.get("target_buyers", [])
+                if buyers:
+                    st.markdown(f"**판매 대상**: {' / '.join(buyers)}")
+                if market_position.get("production_implications"):
+                    st.markdown(f"**제작 영향**: {market_position['production_implications']}")
+
+        st.markdown("---")
+        section_header("⬇ STEP 8 · 다운로드", "EXPORT")
+        
+        d1, d2 = st.columns(2)
+        with d1:
+            docx_bytes = build_diagnostic_docx(dict(st.session_state))
+            st.download_button(
+                label="📄 진단보고서 DOCX 다운로드",
+                data=docx_bytes,
+                file_name=f"IdeaDiagnostic_{inp['title']}_{datetime.now().strftime('%Y%m%d')}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+        with d2:
+            json_str = build_seed_json(dict(st.session_state))
+            st.download_button(
+                label="🔑 LOCKED 시드 JSON 다운로드 ★ Creator Engine 인계용",
+                data=json_str.encode("utf-8"),
+                file_name=f"IdeaSeed_{seed.get('project_id', 'unknown')}_크리에이터엔진용_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+                use_container_width=True,
+                help="이 파일이 Creator Engine 인계용 최종 시드입니다. Creator Engine ① 화면의 'Idea Engine JSON 업로드'에 올리세요.",
+            )
+        
+        st.info("📌 **Creator Engine 사용법** — Creator Engine ① 화면 상단의 'Idea Engine JSON 업로드' 버튼을 눌러 위 JSON 파일을 업로드하면 ① 입력 필드가 자동으로 채워집니다.")
+        
+        with st.expander("JSON 미리보기"):
+            st.code(json_str, language="json")
+        
+        # ── 진행 상태 전체 백업 (Stage 1~7 통째 JSON) ──
+        with st.expander("💾 전체 진행 상태 백업 (Stage 1~7 JSON)", expanded=False):
+            st.caption("전체 진단 데이터를 JSON으로 보존. 디버깅·재현·아카이브용.")
+            render_progress_save_button(stage_num=7)
+        
+        st.markdown("---")
+        cb, cr = st.columns([1, 1])
+        with cb:
+            if st.button("← 이전"):
+                st.session_state["current_stage"] = 6
+                st.rerun()
+        with cr:
+            if st.button("🔄 새 프로젝트 시작", use_container_width=True):
+                reset_session()
+                st.rerun()
 
 
-# ═══════════════════════════════════════════════════
-#  PROJECT (단일 페이지 스크롤)
-# ═══════════════════════════════════════════════════
-elif st.session_state.view == "project" and st.session_state.cur:
-
-    project = st.session_state.projects[st.session_state.cur]
-
-    # ─── 프로젝트 헤더 ───
-    st.markdown(f"## {project['title']}")
-    st.caption(f"{project['genre']} · {project['target_market']} · {project['format']}")
-
-    # ─── 단계 표시 ───
-    render_stepper("project", project)
-
+# ═══════════════════════════════════════════════════════════
+# v2.0 — HOME PAGE
+# ═══════════════════════════════════════════════════════════
+def page_home():
+    """모드 선택 진입 화면. HUNTER vs TRIAGE 두 카드 제시."""
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     st.markdown(
-        f'<div class="callout">'
-        f'<div class="cl">IDEA</div>'
-        f'{project["idea_text"]}'
-        f'</div>',
-        unsafe_allow_html=True
+        '<div class="callout">'
+        '<b>Idea Engine v2.0</b>은 두 개의 트랙으로 구성됩니다. '
+        '머릿속에 아직 아이디어가 없다면 <b>HUNTER</b>로 발굴하시고, '
+        '이미 아이디어가 있다면 <b>TRIAGE</b>로 진단하세요. '
+        'HUNTER에서 발굴한 시드는 자동으로 TRIAGE Stage 1로 전달됩니다.'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
-    # ─── LOCKED 표시 + 편집 (v2.3: OPEN 필드 폐지) ───
-    locked = project.get("locked_items", [])
-    open_items = project.get("open_items", [])  # 하위 호환성 - 기존 프로젝트 로딩 시에만 사용
+    col1, col2 = st.columns(2, gap="large")
 
-    if locked:
-        locked_html = "".join(f"<li>{item}</li>" for item in locked)
-        st.markdown(
-            f'<div style="background:#FFF3CD;padding:8px 12px;border-radius:6px;border-left:4px solid #FFCB05;font-size:.82rem">'
-            f'<b>🔒 LOCKED</b> — 변경 불가<ul style="margin:4px 0 0 0;padding-left:18px">{locked_html}</ul></div>',
-            unsafe_allow_html=True
-        )
-
-    with st.expander("🔒 LOCKED 편집", expanded=False):
-        st.caption("LOCKED = 반드시 지킬 것만 명시. 여기에 없는 것은 엔진이 자유롭게 창작합니다.")
-        edited_locked = st.text_area(
-            "🔒 LOCKED (변경 불가)",
-            value="\n".join(locked),
-            height=180,
-            key="edit_locked",
-            placeholder="한 줄에 하나씩"
-        )
-        if st.button("💾 LOCKED 저장", key="save_locked"):
-            project["locked_items"] = [l.strip() for l in edited_locked.strip().split("\n") if l.strip()]
-            project["open_items"] = []  # v2.3: OPEN 필드 폐지 - 빈 리스트 유지
-            project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            st.success("저장 완료. 이후 생성되는 모든 단계에 반영됩니다.")
+    with col1:
+        st.markdown("""
+        <div style="border:2px solid #E2E2E0;border-radius:14px;padding:28px 26px;background:#fff;height:100%;">
+            <div style="display:inline-block;background:#FFCB05;color:#191970;font-size:.72rem;font-weight:700;padding:4px 10px;border-radius:999px;letter-spacing:.05em;margin-bottom:12px;">HUNTER · 발굴</div>
+            <div style="font-family:'Playfair Display',serif;font-size:1.8rem;font-weight:700;color:#191970;margin-bottom:6px;">아이디어가 아직 없을 때</div>
+            <div style="color:#6B6B7A;font-size:.95rem;margin-bottom:18px;line-height:1.5;">5개의 입구 중 하나로 들어가 작가 안에 잠재된 답을 끌어냅니다.</div>
+            <div style="color:#1A1A2E;font-size:.9rem;line-height:1.85;">
+                <b>입구 1</b> — 욕망 ("로맨스 만들고 싶다")<br>
+                <b>입구 2</b> — 시대 ("IMF 때 이야기")<br>
+                <b>입구 3</b> — 트렌드 ("회빙환 해야 하나")<br>
+                <b>입구 4</b> — What if ("로또+일주일 루프")<br>
+                <b>입구 5</b> — 사실 ("1945.8.15. 일본인")<br>
+                <b>입구 0</b> — 자유 텍스트 (자동 분류)
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+        if st.button("🎯 HUNTER 트랙 시작", key="home_to_hunter", type="primary", use_container_width=True):
+            st.session_state["mode"] = "HUNTER"
+            st.session_state["hunter_entry"] = None
             st.rerun()
 
-    # ─── 포맷 확정·변경 (v2.7.1 신규) ───
-    # 발견 경위: Mr. MOON 질의 — "아이디어를 받아 개발하면서 포맷을 확정할 수 있나?"
-    # 진단: project["format"] 대입 지점이 프로젝트 생성 시점 단 한 곳뿐이었다.
-    #   포맷 판단은 Brainstorm·Core를 본 뒤에 굳는 성질인데
-    #   확정 시점이 판단 시점보다 앞서 있었다.
-    _FORMAT_OPTIONS = ["미지정", "영화", "시리즈", "미니시리즈(4~8화)",
-                       "웹툰", "웹소설", "숏폼", "다큐멘터리", "애니메이션"]
-    _cur_fmt = project.get("format", "미지정")
-    _cur_idx = _FORMAT_OPTIONS.index(_cur_fmt) if _cur_fmt in _FORMAT_OPTIONS else 0
-
-    if _cur_fmt == "미지정":
-        st.warning(
-            "📐 포맷이 **미지정** 상태입니다. 이대로 Structure에 진입하면 "
-            "영화 구조(3막 16비트)가 적용됩니다. 아래에서 확정해 주십시오."
-        )
-
-    with st.expander(f"📐 포맷 확정·변경 — 현재: **{_cur_fmt}**", expanded=(_cur_fmt == "미지정")):
-        st.caption(
-            "포맷은 Brainstorm·Core를 본 뒤에 확정하는 것이 정확합니다. "
-            "여기서 언제든 변경할 수 있으며, 변경 시 이후 생성되는 모든 단계에 반영됩니다."
-        )
-
-        # LOCKED 내 포맷 어휘 충돌 감지
-        _FMT_TOKENS = ["부작", "회차", "시즌", "미니시리즈", "회당", "EP", "에피소드",
-                       "오리지널 6부", "오리지널 8부", "러닝타임"]
-        _conflicts = []
-        for _li, _item in enumerate(project.get("locked_items", []) or []):
-            if any(t in _item for t in _FMT_TOKENS):
-                _conflicts.append((_li, _item))
-
-        if _conflicts and _cur_fmt not in ("미지정",):
-            _is_series_now = P.is_series_format(_cur_fmt)
-            _mismatch = [(i, x) for i, x in _conflicts
-                         if P.is_series_format(x) != _is_series_now]
-            if _mismatch:
-                # 제거 가능 항목 판별: '[포맷]'·'포맷:' 표식이 있는 포맷 전용 항목만.
-                # 로그라인처럼 다른 내용에 포맷 어휘가 섞인 항목은 삭제하면
-                # 본문까지 함께 사라지므로 제거 대상에서 제외한다.
-                _fmt_only = [(i, x) for i, x in _mismatch
-                             if "[포맷]" in x or x.strip().startswith("포맷:") or "포맷]" in x]
-                _mixed = [(i, x) for i, x in _mismatch if (i, x) not in _fmt_only]
-
-                st.error(
-                    f"⚠️ LOCKED {len(_mismatch)}건이 확정 포맷 **{_cur_fmt}**와 충돌합니다. "
-                    "상류(Idea Engine)의 잔재일 가능성이 높습니다."
-                )
-                if _fmt_only:
-                    st.markdown("**포맷 전용 항목 — 제거 가능**")
-                    for _i, _x in _fmt_only:
-                        st.markdown(f"- `#{_i}` {_x[:90]}")
-                if _mixed:
-                    st.markdown("**혼합 항목 — 문구만 수정 필요 (자동 제거하지 않습니다)**")
-                    for _i, _x in _mixed:
-                        st.markdown(f"- `#{_i}` {_x[:90]}")
-                    st.caption(
-                        "이 항목들은 로그라인처럼 본문과 포맷 표현이 섞여 있어 통째로 지우면 내용이 함께 사라집니다. "
-                        "아래 'LOCKED 편집'에서 포맷 어휘만 직접 고쳐 주십시오."
-                    )
-
-                st.caption(
-                    "v2.7.1부터 포맷은 LOCKED보다 상위로 선언되므로 생성 결과는 확정 포맷을 따릅니다. "
-                    "다만 LOCKED 문구 자체를 정리해 두는 것이 더 깨끗합니다."
-                )
-                if _fmt_only and st.button(
-                    f"🧹 포맷 전용 항목 {len(_fmt_only)}건 제거", key="strip_fmt_locked"
-                ):
-                    _drop = {i for i, _ in _fmt_only}
-                    _keep = [x for i, x in enumerate(project.get("locked_items", []))
-                             if i not in _drop]
-                    project["locked_items"] = _keep
-                    project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    st.success(f"{len(_fmt_only)}건 제거 완료.")
-                    st.rerun()
-
-        _new_fmt = st.selectbox(
-            "📐 포맷",
-            _FORMAT_OPTIONS,
-            index=_cur_idx,
-            key="edit_format",
-        )
-        if _new_fmt != _cur_fmt:
-            _was_series = P.is_series_format(_cur_fmt)
-            _now_series = P.is_series_format(_new_fmt)
-            if _was_series != _now_series and project.get("structure_story"):
-                st.warning(
-                    "영화 ↔ 시리즈 전환입니다. 비트 구조 자체가 달라지므로 "
-                    "**Structure부터 재실행**을 권합니다. Core와 Character Bible은 유지해도 됩니다."
-                )
-        if st.button("💾 포맷 저장", key="save_format"):
-            project["format"] = _new_fmt
-            project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            st.success(f"포맷 확정: {_new_fmt}. 이후 생성되는 모든 단계에 반영됩니다.")
+    with col2:
+        st.markdown("""
+        <div style="border:2px solid #E2E2E0;border-radius:14px;padding:28px 26px;background:#fff;height:100%;">
+            <div style="display:inline-block;background:#191970;color:#FFCB05;font-size:.72rem;font-weight:700;padding:4px 10px;border-radius:999px;letter-spacing:.05em;margin-bottom:12px;">TRIAGE · 진단</div>
+            <div style="font-family:'Playfair Display',serif;font-size:1.8rem;font-weight:700;color:#191970;margin-bottom:6px;">이미 아이디어가 있을 때</div>
+            <div style="color:#6B6B7A;font-size:.95rem;margin-bottom:18px;line-height:1.5;">7단계 진단으로 GO/CONDITIONAL/NOGO 판정 + LOCKED 시드 패키지 생성.</div>
+            <div style="color:#1A1A2E;font-size:.9rem;line-height:1.85;">
+                <b>1</b> 아이디어 입력<br>
+                <b>2</b> 로그라인 정제<br>
+                <b>3</b> Hook 진단 (Gate 0)<br>
+                <b>4</b> Format 추천<br>
+                <b>5</b> Reference 매핑<br>
+                <b>6</b> Market 진단<br>
+                <b>7</b> 최종 판정 (Opus 4.7)
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+        if st.button("🔍 TRIAGE 트랙 시작", key="home_to_triage", use_container_width=True):
+            st.session_state["mode"] = "TRIAGE"
             st.rerun()
 
-    st.markdown("---")
+    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+    st.markdown(
+        '<div style="text-align:center;color:#8E8E99;font-size:.82rem;font-family:Pretendard,sans-serif;">'
+        '"카탈로그를 보여주는 게 아니라 작가 안에 잠재된 답을 끌어내기"'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-    # ═══════════════════════════════════════
-    # STEP 1: 리서치 (선택)
-    # ═══════════════════════════════════════
-    st.markdown('<div class="section-header">🔍 리서치 <span class="en">RESEARCH</span></div>', unsafe_allow_html=True)
-    st.caption("실화/뉴스 + 기존 작품 정보 검색. 건너뛰어도 됩니다.")
 
-    if st.button("🔍 리서치 실행"):
-        with st.spinner("리서치 정리 중..."):
-            result = call_research(
-                project["idea_text"],
-                project["genre"],
-                project["target_market"]
-            )
-            if result:
-                project["research"] = result
-                project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                st.rerun()
+# ═══════════════════════════════════════════════════════════
+# v2.0 — HUNTER PAGES (골격 — 2~4단계에서 채움)
+# ═══════════════════════════════════════════════════════════
+def page_hunter_select():
+    """입구 선택 화면 — 입구 0 자유 텍스트 + 입구 1~5 카드."""
+    section_header("🎯 HUNTER · 입구 선택", "CHOOSE YOUR ENTRY")
+    small_meta(
+        "5개 입구 중 하나로 들어가시거나, 입구 0에 자유롭게 입력하시면 자동 분류됩니다. "
+        "각 입구는 작가의 영감 유형에 맞춘 사고 확장 엔진입니다."
+    )
 
-    # 리서치 결과 표시
-    if project.get("research"):
-        research_data = project["research"]
-        summary = research_data.get("research_summary", {})
+    # ── 입구 0 — 자유 텍스트 ──
+    st.markdown("### 🔮 입구 0 — 자유 텍스트 (자동 분류)")
+    st.caption("어느 입구로 갈지 모르겠으면, 머릿속에 떠오른 그대로 입력하세요. 자동으로 분류됩니다.")
 
-        with st.expander(
-            f"📰 리서치 결과 — "
-            f"실화 {summary.get('total_real_events', 0)}건 · "
-            f"작품 {summary.get('total_existing_works', 0)}건",
-            expanded=True
-        ):
-            # 실화/뉴스
-            if research_data.get("real_events"):
-                st.markdown("**📰 실화 / 뉴스**")
-                for event in research_data["real_events"]:
-                    st.markdown(
-                        f'<div class="ri">'
-                        f'<div class="rl">#{event.get("id", "")} '
-                        f'[{event.get("year", "")}] {event.get("source", "")}</div>'
-                        f'<b>{event.get("title", "")}</b><br>'
-                        f'{event.get("summary", "")}<br>'
-                        f'<span style="color:var(--navy)">→ {event.get("story_potential", "")}</span>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
+    with st.form("hunter_entry_0_form", clear_on_submit=False):
+        free_text = st.text_area(
+            "자유 입력",
+            value=st.session_state.get("hunter_input", ""),
+            height=100,
+            placeholder="예: 로맨스 만들고 싶다 / IMF 때 이야기 / 회빙환 해야 하나 / 로또+일주일 루프 / 1945.8.15 일본인",
+        )
+        submitted = st.form_submit_button("🔮 자동 분류 실행", type="primary", use_container_width=True)
 
-            # 기존 작품
-            if research_data.get("existing_works"):
-                st.markdown("**🎬 기존 작품**")
-                for work in research_data["existing_works"]:
-                    st.markdown(
-                        f'<div class="ri">'
-                        f'<div class="rl">#{work.get("id", "")} '
-                        f'{work.get("type", "")} · {work.get("country", "")} · '
-                        f'{work.get("year", "")}</div>'
-                        f'<b>{work.get("title", "")}</b><br>'
-                        f'유사: {work.get("similarity", "")}<br>'
-                        f'<span style="color:var(--navy)">→ 차별화: '
-                        f'{work.get("difference_opportunity", "")}</span>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-            # 핵심 시사점
-            if summary.get("key_insight"):
-                st.markdown(
-                    f'<div class="callout">'
-                    f'<div class="cl">💡 핵심 시사점</div>'
-                    f'{summary["key_insight"]}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-    st.markdown("---")
-
-    # ═══════════════════════════════════════
-    # STEP 2: Brainstorm (2단계 분할 호출)
-    # ═══════════════════════════════════════
-    st.markdown('<div class="section-header">🧠 Brainstorm <span class="en">CONCEPT IDEATION</span></div>', unsafe_allow_html=True)
-
-    if st.button("🧠 Brainstorm 실행", type="primary"):
-
-        # ── 1단계: 카드 생성 ──
-        with st.spinner("① 컨셉 카드 생성 중... (약 20–30초)"):
-            cards_result = call_brainstorm_cards(
-                project["idea_text"],
-                project["genre"],
-                project["target_market"],
-                project["format"],
-                project.get("research"),
-                locked_block=_build_project_locked_block(project)
-            )
-
-        if cards_result:
-            project["brainstorm_cards"] = cards_result
-            project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-            # Top 3 카드 추출
-            all_cards = cards_result.get("idea_cards", [])
-            cards_map = {c["id"]: c for c in all_cards}
-
-            top3_data = []
-            for t in cards_result.get("top3", []):
-                card = cards_map.get(t["card_id"])
-                if card:
-                    top3_data.append(card)
-
-            # ── 2단계: 분석 + Gate A ──
-            if top3_data:
-                with st.spinner("② 시장 분석 + Gate A 채점 중... (약 10–20초)"):
-                    analysis_result = call_brainstorm_analysis(
-                        project["idea_text"],
-                        project["genre"],
-                        project["target_market"],
-                        project["format"],
-                        top3_data,
-                        project.get("research"),
-                        locked_block=_build_project_locked_block(project)
-                    )
-
-                if analysis_result:
-                    project["brainstorm_analysis"] = analysis_result
-                    project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if submitted and free_text.strip():
+        st.session_state["hunter_input"] = free_text.strip()
+        client = get_anthropic_client()
+        with st.spinner("Sonnet이 입력을 분석해 적합한 입구로 분류 중... (10~20초)"):
+            prompt_text = P.HUNTER_ENTRY_0_PROMPT.format(free_text=free_text.strip())
+            result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+            if result.get("_parse_error"):
+                st.error("응답 파싱 실패")
+                with st.expander("Raw 응답"):
+                    st.text(result.get("_raw", ""))
             else:
-                st.warning("Top 3 카드를 추출하지 못했습니다. 카드만 표시합니다.")
-
-            st.rerun()
-
-    # ═══════════════════════════════════════
-    # 결과 표시
-    # ═══════════════════════════════════════
-    if project.get("brainstorm_cards"):
-        bc = project["brainstorm_cards"]
-        ba = project.get("brainstorm_analysis", {})
-
-        # ── 아이디어 유형 ──
-        idea_type = bc.get("idea_type", "").upper()
-        diagnosis = bc.get("idea_type_diagnosis", "")
-        action = bc.get("idea_type_action", "")
-        type_color = {"STORY": "var(--g)", "MOOD": "var(--navy)", "HYBRID": "#FF8C00"}.get(idea_type, "var(--dim)")
-        action_html = (
-            f'<div style="margin-top:.5rem;padding:.4rem .7rem;background:#FFF8E1;'
-            f'border-radius:6px;font-size:.85rem;font-weight:700;color:#8B6914">→ {action}</div>'
-        ) if action else ""
-        st.markdown(
-            f'<div class="callout" style="border-left:4px solid {type_color}">'
-            f'<div class="cl" style="color:{type_color}">아이디어 유형: {idea_type}</div>'
-            f'<div style="margin:.3rem 0;font-size:.9rem">{diagnosis}</div>'
-            f'{action_html}'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-        # ── 시장 · 포맷 맥락 (분석 있을 때) ──
-        if ba:
-            market_ctx = ba.get("market_context", {})
-            format_ctx = ba.get("format_context", {})
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                ref_titles = ", ".join(market_ctx.get("reference_titles", []))
-                st.markdown(
-                    f'<div class="callout">'
-                    f'<div class="cl">🌏 시장 — {market_ctx.get("target_market", "")}</div>'
-                    f'기회: {market_ctx.get("market_insight", "")}<br>'
-                    f'문화코드: {market_ctx.get("cultural_code", "")}<br>'
-                    f'리스크: {market_ctx.get("market_risk", "")}<br>'
-                    f'참고작: {ref_titles}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-            with col2:
-                st.markdown(
-                    f'<div class="callout">'
-                    f'<div class="cl">📐 포맷 — {format_ctx.get("selected_format", "")}</div>'
-                    f'적합성: {format_ctx.get("format_rationale", "")}<br>'
-                    f'구조: {format_ctx.get("structure_note", "")}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-            # ── 포맷 적합성 권고 (v2.7.1 신규) ──
-            ff = ba.get("format_fit", {})
-            if ff:
-                _match = ff.get("match", True)
-                _rec = ff.get("recommended_format", "")
-                _cur = ff.get("current_format", project.get("format", ""))
-                if _match:
-                    st.success(
-                        f"📐 포맷 적합성 — 확정 포맷 **{_cur}**이 소재와 맞습니다. "
-                        f"{ff.get('rationale', '')}"
-                    )
-                else:
-                    st.info(
-                        f"📐 포맷 적합성 — 소재 자체는 **{_rec}** 쪽에 가깝습니다 "
-                        f"(현재 확정: {_cur}). 참고 정보이며 판정이 아닙니다."
-                    )
-                with st.expander("📐 포맷 적합성 근거", expanded=(not _match)):
-                    st.markdown(f"**사건 밀도** — {ff.get('event_density', '')}")
-                    st.markdown(f"**인물 부하** — {ff.get('character_load', '')}")
-                    st.markdown(f"**판단 근거** — {ff.get('rationale', '')}")
-                    if not _match and ff.get("if_forced"):
-                        st.markdown(f"**{_cur}를 유지할 경우** — {ff['if_forced']}")
-                    st.caption(
-                        "포맷 확정 권한은 작가에게 있습니다. 변경하려면 위 '포맷 확정·변경'에서 조정해 주십시오."
-                    )
-
-            # ── 훅 문장 ──
-            hook = ba.get("hook_sentence", "")
-            if hook:
-                st.markdown(
-                    f'<div style="text-align:center;padding:1.5rem 0">'
-                    f'<div style="font-size:.7rem;color:var(--y);font-weight:600">HOOK</div>'
-                    f'<div style="font-size:1.15rem;font-weight:600;color:var(--t);line-height:1.5">'
-                    f'"{hook}"</div>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-        st.markdown("---")
-
-        # ── Top 3 컨셉 ──
-        st.markdown("#### 🏆 Top 3 컨셉")
-
-        cards_map = {c["id"]: c for c in bc.get("idea_cards", [])}
-
-        for top_item in bc.get("top3", []):
-            card = cards_map.get(top_item["card_id"], {})
-            if card:
-                col1, col2 = st.columns([5, 1])
-
-                with col1:
-                    st.markdown(
-                        f'<div class="card">'
-                        f'<span style="color:var(--navy);font-weight:700">#{top_item["rank"]}</span> '
-                        f'<b>{card.get("title", "")}</b><br>'
-                        f'<span style="color:#444">{card.get("logline_seed", "")}</span><br>'
-                        f'<span style="font-size:.8rem;color:#666">'
-                        f'👤 {card.get("protagonist", "")}<br>'
-                        f'⚔️ {card.get("conflict", "")}<br>'
-                        f'✨ {card.get("hook", "")}<br>'
-                        f'🎬 {card.get("visual_image", "")}'
-                        f'</span><br>'
-                        f'<span style="font-size:.75rem;color:var(--dim)">'
-                        f'이유: {top_item.get("reason", "")}</span>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-                with col2:
-                    st.markdown(
-                        f'<div class="big">{card.get("total_score", 0.0)}</div>'
-                        f'<div class="sm">{card.get("genre", "")}</div>',
-                        unsafe_allow_html=True
-                    )
-
-        # ── 차별화 포인트 (분석 있을 때) ──
-        if ba:
-            differentiation = ba.get("differentiation", [])
-            if differentiation:
-                st.markdown("#### 💎 차별화 포인트")
-                for idx, item in enumerate(differentiation, 1):
-                    st.markdown(f"**{idx}.** {item}")
-
-            # ── 개발 우선순위 ──
-            dev_priority = ba.get("development_priority", {})
-            if dev_priority:
-                st.markdown("#### 🧭 개발 우선순위")
-                col1, col2, col3 = st.columns(3)
-
-                col1.markdown(
-                    f'<div class="callout">'
-                    f'<div class="cl">추천 방향</div>'
-                    f'{dev_priority.get("recommended_direction", "")}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-                col2.markdown(
-                    f'<div class="callout">'
-                    f'<div class="cl">Core Build 집중</div>'
-                    f'{dev_priority.get("next_step", "")}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-                col3.markdown(
-                    f'<div class="callout" style="border-left-color:var(--r)">'
-                    f'<div class="cl" style="color:var(--r)">리스크</div>'
-                    f'{dev_priority.get("risk", "")}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-            st.markdown("---")
-
-            # ── Gate A: Concept Gate ──
-            gate = ba.get("gate_a_scores", {})
-            avg = gate.get("average", 0)
-            passed = avg >= 7.0
-
-            st.markdown("#### 🚪 Gate A: Concept Gate")
-
-            col1, col2 = st.columns([1, 2])
-
-            with col1:
-                gate_color = "var(--g)" if passed else "var(--r)"
-                gate_label = "PASS" if passed else "FAIL"
-                st.markdown(
-                    f'<div style="text-align:center">'
-                    f'<div class="big" style="color:{gate_color}">{avg}</div>'
-                    f'<div class="sm" style="color:{gate_color};'
-                    f'font-size:1rem;font-weight:700">{gate_label}</div>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-            with col2:
-                gate_items = [
-                    ("주인공", gate.get("protagonist_visible", 0)),
-                    ("갈등", gate.get("conflict_one_line", 0)),
-                    ("차별점", gate.get("differentiation", 0)),
-                    ("포스터", gate.get("poster_image", 0)),
-                    ("시장성", gate.get("market_potential", 0)),
-                ]
-                for name, score in gate_items:
-                    bar_pct = score * 10
-                    st.markdown(
-                        f'<div style="display:flex;align-items:center;'
-                        f'margin:.2rem 0;font-size:.8rem">'
-                        f'<div style="width:60px;color:var(--dim)">{name}</div>'
-                        f'<div style="flex:1;background:#E0E0E8;'
-                        f'border-radius:4px;height:8px;margin:0 .5rem">'
-                        f'<div style="width:{bar_pct}%;background:var(--y);'
-                        f'height:100%;border-radius:4px"></div>'
-                        f'</div>'
-                        f'<div style="width:30px;text-align:right">{score}</div>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-            if passed:
-                st.success("✅ Gate A 통과. Core Build 진행 가능.")
-
-                # v2.5.3: Brainstorm 완료 시점 JSON 저장
-                with st.expander("💾 프로젝트 JSON 저장 (Brainstorm 완료 시점)", expanded=False):
-                    st.caption(
-                        "브라우저를 닫거나 세션이 끊겨도 여기서 JSON 파일을 저장하면 "
-                        "다음에 홈 화면의 '프로젝트 불러오기'로 복원 후 Core부터 이어서 진행할 수 있습니다."
-                    )
-                    title_safe_json = project.get("title", "프로젝트").replace(" ", "_")
-                    ts_json = datetime.now().strftime("%Y%m%d_%H%M")
-                    project_json_str = save_project_to_json(project)
-                    st.download_button(
-                        label="💾 프로젝트 저장 (Brainstorm 완료)",
-                        data=project_json_str.encode("utf-8"),
-                        file_name=f"{title_safe_json}_Brainstorm완료_{ts_json}.json",
-                        mime="application/json",
-                        use_container_width=True,
-                        key="dl_brainstorm",
-                    )
-
-                if st.button("🎯 Core Build 진행 →", type="primary", use_container_width=True):
-                    project["stage"] = "core"
-                    st.session_state.view = "core"
-                    st.rerun()
-            else:
-                st.warning(
-                    f"⚠️ Gate A 미통과 (평균 {avg}). "
-                    f"아이디어 보강 또는 재실행 권장."
-                )
-
-                # v2.5.3: Override 전에도 JSON 저장 가능
-                with st.expander("💾 프로젝트 JSON 저장 (Brainstorm 완료 시점)", expanded=False):
-                    st.caption("Gate A 미통과 상태이지만 현재까지의 작업을 저장할 수 있습니다.")
-                    title_safe_json = project.get("title", "프로젝트").replace(" ", "_")
-                    ts_json = datetime.now().strftime("%Y%m%d_%H%M")
-                    project_json_str = save_project_to_json(project)
-                    st.download_button(
-                        label="💾 프로젝트 저장 (Brainstorm 완료, Gate 미통과)",
-                        data=project_json_str.encode("utf-8"),
-                        file_name=f"{title_safe_json}_Brainstorm_{ts_json}.json",
-                        mime="application/json",
-                        use_container_width=True,
-                        key="dl_brainstorm_fail",
-                    )
-
-                col_o1, col_o2 = st.columns(2)
-                with col_o1:
-                    if st.button("🔓 Override (강제 통과)"):
-                        project["stage"] = "core"
-                        st.session_state.view = "core"
-                        st.rerun()
-                with col_o2:
-                    if st.button("🔄 Brainstorm 재실행"):
-                        project["brainstorm_cards"] = None
-                        project["brainstorm_analysis"] = None
-                        st.rerun()
-
-        # ── 전체 아이디어 카드 (접이식) ──
-        all_cards = bc.get("idea_cards", [])
-        if all_cards:
-            with st.expander(f"📋 전체 아이디어 카드 ({len(all_cards)}개)"):
-                for card in sorted(
-                    all_cards,
-                    key=lambda x: x.get("total_score", 0),
-                    reverse=True
-                ):
-                    st.markdown(
-                        f"**#{card['id']} {card.get('title', '')}** — "
-                        f"{card.get('total_score', 0.0)}점 &nbsp; "
-                        f"{card.get('logline_seed', '')}"
-                    )
-
-        # ── 분석 없을 때 fallback 네비게이션 ──
-        if not ba:
-            st.markdown("---")
-            st.warning("⚠️ 시장 분석 + Gate A 채점이 아직 완료되지 않았습니다.")
-
-            col_fb1, col_fb2 = st.columns(2)
-            with col_fb1:
-                if st.button("🔄 분석 재시도", use_container_width=True):
-                    # 2단계만 재실행
-                    cards_map = {c["id"]: c for c in bc.get("idea_cards", [])}
-                    top3_data = [
-                        cards_map[t["card_id"]]
-                        for t in bc.get("top3", [])
-                        if t["card_id"] in cards_map
-                    ]
-                    if top3_data:
-                        with st.spinner("② 시장 분석 + Gate A 채점 중..."):
-                            ar = call_brainstorm_analysis(
-                                project["idea_text"],
-                                project["genre"],
-                                project["target_market"],
-                                project["format"],
-                                top3_data,
-                                project.get("research"),
-                                locked_block=_build_project_locked_block(project)
-                            )
-                        if ar:
-                            project["brainstorm_analysis"] = ar
-                            project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                            st.rerun()
-            with col_fb2:
-                if st.button("🎯 분석 건너뛰고 Core Build →", use_container_width=True):
-                    project["stage"] = "core"
-                    st.session_state.view = "core"
-                    st.rerun()
-
-    # ─── 푸터 ───
-    st.markdown("---")
-    st.caption(ENGINE_FOOTER)
-
-
-# ═══════════════════════════════════════════════════
-#  CORE BUILD
-# ═══════════════════════════════════════════════════
-elif st.session_state.view == "core" and st.session_state.cur:
-
-    project = st.session_state.projects[st.session_state.cur]
-    bc = project.get("brainstorm_cards", {})
-    ba = project.get("brainstorm_analysis", {})
-
-    st.markdown(f"## {project['title']}")
-    st.caption(f"{project['genre']} · {project['target_market']} · {project['format']}")
-
-    # ─── 단계 표시 ───
-    render_stepper("core", project)
-
-    # Brainstorm에서 인계받은 정보 표시
-    selected_concept = None
-    if bc:
-        cards_map = {c["id"]: c for c in bc.get("idea_cards", [])}
-        top3 = bc.get("top3", [])
-        if top3:
-            selected_concept = cards_map.get(top3[0].get("card_id"), {})
-            if selected_concept:
-                st.markdown(
-                    f'<div class="callout">'
-                    f'<div class="cl">🏆 선정 컨셉: {selected_concept.get("title", "")}</div>'
-                    f'{selected_concept.get("logline_seed", "")}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-    if ba:
-        dp = ba.get("development_priority", {})
-        if dp.get("next_step"):
-            st.markdown(
-                f'<div class="callout">'
-                f'<div class="cl">Core Build 집중 포인트</div>'
-                f'{dp["next_step"]}'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-
-    st.markdown("---")
-
-    st.markdown('<div class="section-header">🎯 Core Build <span class="en">CORE DEVELOPMENT</span></div>', unsafe_allow_html=True)
-    st.caption("로그라인 · 기획의도 · 세계관 · 캐릭터 · Goal/Need/Strategy를 고정합니다.")
-
-    if st.button("🎯 Core Build 실행", type="primary"):
-        if not selected_concept:
-            st.error("선정된 컨셉이 없습니다. Brainstorm을 먼저 실행해주세요.")
-        else:
-            with st.spinner("① Core Build 생성 중... (약 30–40초)"):
-                core_result = call_core_build_main(
-                    project["idea_text"], project["genre"],
-                    project["target_market"], project["format"],
-                    selected_concept, project.get("research"),
-                    locked_block=_build_project_locked_block(project),
-                    fact_based=project.get("fact_based", False),
-                    historical=project.get("historical", False),
-                    film_type=project.get("film_type", ""),
-                )
-            if core_result:
-                project["core"] = core_result
-                project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                with st.spinner("② Gate B + Gate C 채점 중... (약 10–20초)"):
-                    gate_result = call_core_gate(core_result)
-                if gate_result:
-                    project["core_gate"] = gate_result
-                    project["final_score"] = gate_result.get("five_axis_scores", {}).get("final_score")
-                    project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                st.session_state["hunter_classified"] = result
                 st.rerun()
 
-    # ── Core Build 결과 표시 ──
-    if project.get("core"):
-        core = project["core"]
-
-        # Logline Pack
-        st.markdown("#### 📝 Logline Pack")
-        lp = core.get("logline_pack", {})
-        for label, key in [("Original", "original"), ("Washed", "washed"),
-                           ("투자자용", "investor"), ("감독용", "director"),
-                           ("캐릭터 훅", "character_hook")]:
-            val = lp.get(key, "")
-            if val:
-                st.markdown(f'<div class="callout"><div class="cl">{label}</div>{val}</div>', unsafe_allow_html=True)
-
-        # Goal / Need / Strategy
-        st.markdown("#### 🎯 Goal / Need / Strategy")
-        gns = core.get("goal_need_strategy", {})
-        c1, c2, c3 = st.columns(3)
-        c1.markdown(f'<div class="callout"><div class="cl">GOAL</div>{gns.get("goal","")}</div>', unsafe_allow_html=True)
-        c2.markdown(f'<div class="callout"><div class="cl">NEED</div>{gns.get("need","")}</div>', unsafe_allow_html=True)
-        c3.markdown(f'<div class="callout"><div class="cl">STRATEGY</div>{gns.get("strategy","")}</div>', unsafe_allow_html=True)
-        cr, ce = st.columns(2)
-        cr.markdown(f'<div class="callout" style="border-left-color:var(--r)"><div class="cl" style="color:var(--r)">RISK</div>{gns.get("risk","")}</div>', unsafe_allow_html=True)
-        ce.markdown(f'<div class="callout" style="border-left-color:var(--g)"><div class="cl" style="color:var(--g)">ENDING PAYOFF</div>{gns.get("ending_payoff","")}</div>', unsafe_allow_html=True)
-
-        # Narrative Drive (BJND)
-        nd = core.get("narrative_drive", {})
-        if nd and nd.get("desire_origin"):
-            origin = nd.get("desire_origin", "")
-            origin_kr = "상실(Loss)" if origin == "loss" else "결핍(Lack)" if origin == "lack" else origin
-            st.markdown(
-                f'<div class="callout" style="border-left-color:#9B59B6">'
-                f'<div class="cl" style="color:#9B59B6">🔮 서사동력 — Narrative Drive</div>'
-                f'<b>{origin_kr}</b>: {nd.get("origin_detail","")}<br>'
-                f'아크: {nd.get("arc_direction","")} · 해결전략: {nd.get("resolution_strategy","")}<br>'
-                f'<span style="font-size:.8rem;color:#666">Goal↔Need 간극: {nd.get("goal_need_gap","")}</span>'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-
-        # Project Intent (소재 · 장르 · 시장분석)
-        st.markdown("#### 📋 기획의도 — 왜 이 작품을 기획하는가")
-        pi = core.get("project_intent", {})
-
-        if pi.get("subject"):
-            st.markdown(f'<div class="callout"><div class="cl">소재 — 왜 이 소재인가</div>{pi["subject"]}</div>', unsafe_allow_html=True)
-
-        if pi.get("genre_approach"):
-            st.markdown(f'<div class="callout"><div class="cl">장르 — 왜 이 장르인가</div>{pi["genre_approach"]}</div>', unsafe_allow_html=True)
-
-        if pi.get("market_rationale"):
-            st.markdown(f'<div class="callout"><div class="cl">시장 — 왜 지금 이 시장인가</div>{pi["market_rationale"]}</div>', unsafe_allow_html=True)
-
-        cp1, cp2 = st.columns(2)
-        if pi.get("pitch"):
-            cp1.markdown(f'<div class="callout"><div class="cl">Elevator Pitch</div>{pi["pitch"]}</div>', unsafe_allow_html=True)
-        if pi.get("theme"):
-            cp2.markdown(f'<div class="callout"><div class="cl">Theme</div>{pi["theme"]}</div>', unsafe_allow_html=True)
-        if pi.get("tone_manner"):
-            st.markdown(f"**Tone & Manner:** {', '.join(pi['tone_manner'])}")
-
-        # World Build
-        st.markdown("#### 🌍 세계관")
-        wb = core.get("world_build", {})
-        cw1, cw2 = st.columns(2)
-        with cw1:
-            for label, key in [("시간","time"),("공간","space"),("규칙","rules"),("금기","taboo"),("권력구조","power_structure")]:
-                val = wb.get(key, "")
-                if val:
-                    st.markdown(f"**{label}:** {val}")
-        with cw2:
-            if wb.get("visual_keywords"):
-                st.markdown(f"**시각 키워드:** {', '.join(wb['visual_keywords'])}")
-            if wb.get("conflict_points"):
-                st.markdown("**충돌 포인트:**")
-                for cp in wb["conflict_points"]:
-                    st.markdown(f"- {cp}")
-
-        # Characters
-        st.markdown("#### 🎭 캐릭터")
-        role_labels = {"protagonist":"주인공","antagonist":"적대자","ally":"조력자","mirror":"거울","catalyst":"촉매자","subplot_lead":"서브플롯 리드"}
-        all_display_chars = core.get("characters", []) + core.get("extended_characters", [])
-        for ch in all_display_chars:
-            role = role_labels.get(ch.get("role",""), ch.get("role",""))
-            st.markdown(
-                f'<div class="card"><div class="cl">{role}: {ch.get("name","")}</div>'
-                f'{ch.get("description","")}<br>'
-                f'<span style="font-size:.8rem;color:#666">'
-                f'🎯 {ch.get("goal","")}<br>💔 {ch.get("need",ch.get("flaw",""))}<br>'
-                f'⚡ {ch.get("strategy","")}<br>🗣️ {ch.get("dialogue_tone","")}</span></div>',
-                unsafe_allow_html=True
-            )
-
-        # Relationship
-        rel = core.get("relationship_map", [])
-        if rel:
-            st.markdown("#### 🔗 관계도")
-            for r in rel:
-                st.markdown(f"- {r}")
-
-        # ── 매력 설계도 (Attraction Design) ──
-        ad = core.get("attraction_design", {})
-        if ad:
-            st.markdown("---")
-            st.markdown('<div class="section-header">⚡ 매력 설계도 <span class="en">ATTRACTION DESIGN</span></div>', unsafe_allow_html=True)
-            st.caption("이 이야기가 멈출 수 없게 만드는 핵심 설계 — Writer/Series/Novel Engine에 자동 전달됩니다.")
-
-            # 첫 장면
-            oh = ad.get("opening_hook", {})
-            if oh:
-                hook_type = oh.get("type", "")
-                hook_desc = oh.get("description", "")
-                hook_check = oh.get("forbidden_check", "")
-                st.markdown(
-                    f'<div class="card" style="border-left:4px solid var(--y)">'
-                    f'<div class="cl">🎬 첫 장면 — OPENING HOOK</div>'
-                    f'<div style="font-size:.75rem;color:var(--navy);font-weight:700;margin-bottom:.4rem">[{hook_type}]</div>'
-                    f'<p style="line-height:1.7;margin:.3rem 0">{hook_desc}</p>'
-                    f'<div style="font-size:.75rem;color:var(--g);margin-top:.4rem">✓ {hook_check}</div>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-            # 배반 포인트
-            tp = ad.get("twist_point", {})
-            if tp:
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown(
-                        f'<div class="ri"><div class="rl">👀 관객이 예상하는 전개</div>'
-                        f'{tp.get("expected_direction", "")}</div>',
-                        unsafe_allow_html=True
-                    )
-                with c2:
-                    st.markdown(
-                        f'<div class="ri" style="border-left:3px solid var(--y)">'
-                        f'<div class="rl">💥 배반 포인트 — 이 이야기만의 방향</div>'
-                        f'{tp.get("betrayal", "")}</div>',
-                        unsafe_allow_html=True
-                    )
-                if tp.get("why_more_true"):
-                    st.markdown(
-                        f'<div class="callout"><div class="cl">배반이 더 진실된 이유</div>'
-                        f'{tp["why_more_true"]}</div>',
-                        unsafe_allow_html=True
-                    )
-
-            # Water Cooler Moment
-            wc = ad.get("water_cooler_moment", {})
-            if wc:
-                st.markdown(
-                    f'<div class="card" style="background:var(--light-bg)">'
-                    f'<div class="cl">💬 Water Cooler Moment — 말하고 싶어지는 장면</div>'
-                    f'<p style="font-size:.95rem;font-weight:700;margin:.3rem 0">{wc.get("scene_or_setup","")}</p>'
-                    f'<div style="font-size:.8rem;color:var(--dim)">{wc.get("why_memorable","")}</div>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-            # 한국 구체성 + 빌런 논리
-            c1, c2 = st.columns(2)
-            with c1:
-                ks = ad.get("korean_specificity", [])
-                if ks:
-                    ks_html = "<br>".join([f"• {k}" for k in ks])
-                    st.markdown(
-                        f'<div class="ri"><div class="rl">🇰🇷 한국 구체성</div>{ks_html}</div>',
-                        unsafe_allow_html=True
-                    )
-            with c2:
-                vl = ad.get("villain_logic", "")
-                if vl:
-                    st.markdown(
-                        f'<div class="ri"><div class="rl">🖤 빌런의 논리</div>{vl}</div>',
-                        unsafe_allow_html=True
-                    )
-
-            # 감정 폭발 설계
-            ee = ad.get("emotional_explosion", {})
-            if ee:
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown(
-                        f'<div class="ri"><div class="rl">🔒 감정 억압 구간</div>'
-                        f'{ee.get("suppression","")}</div>',
-                        unsafe_allow_html=True
-                    )
-                with c2:
-                    st.markdown(
-                        f'<div class="ri" style="border-left:3px solid var(--r)">'
-                        f'<div class="rl">💣 폭발 장면</div>'
-                        f'{ee.get("explosion_moment","")}</div>',
-                        unsafe_allow_html=True
-                    )
-
-            # 금지 방향
-            fd = ad.get("forbidden_directions", [])
-            if fd:
-                fd_html = " &nbsp;|&nbsp; ".join([f'<span style="color:var(--r)">✗ {f}</span>' for f in fd])
-                st.markdown(
-                    f'<div class="ri"><div class="rl">🚫 절대 가면 안 되는 방향</div>{fd_html}</div>',
-                    unsafe_allow_html=True
-                )
-
+    # ── 자동 분류 결과 표시 ──
+    classified = st.session_state.get("hunter_classified")
+    if classified:
         st.markdown("---")
+        st.markdown("### 🎯 자동 분류 결과")
+        primary = classified.get("primary_entry", {})
+        secondary = classified.get("secondary_entry", {})
 
-        # Gate B + C
-        if project.get("core_gate"):
-            cg = project["core_gate"]
-            gb = cg.get("gate_b_drive", {})
-            gc = cg.get("gate_c_character", {})
-            fa = cg.get("five_axis_scores", {})
+        st.markdown(f"""
+        <div class="callout">
+        <b>1순위:</b> 입구 {primary.get('entry_id', '?')} — {primary.get('entry_name', '')}
+        (확신도 {primary.get('confidence', 0)}%)<br>
+        <i>{primary.get('reasoning', '')}</i>
+        </div>
+        """, unsafe_allow_html=True)
 
-            st.markdown("#### 🚪 Gate B: Drive Gate")
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                gb_avg = gb.get("average", 0)
-                cl = "var(--g)" if gb_avg >= 7.0 else "var(--r)"
-                lb = "PASS" if gb_avg >= 7.0 else "FAIL"
-                st.markdown(f'<div style="text-align:center"><div class="big" style="color:{cl}">{gb_avg}</div><div class="sm" style="color:{cl};font-size:1rem;font-weight:700">{lb}</div></div>', unsafe_allow_html=True)
-            with c2:
-                for nm, sc in [("Goal 선명도",gb.get("goal_clarity",0)),("Need 자연스러움",gb.get("need_from_loss",0)),("Strategy 창의성",gb.get("strategy_creative",0)),("실패 대가",gb.get("failure_cost",0))]:
-                    st.markdown(f'<div style="display:flex;align-items:center;margin:.2rem 0;font-size:.8rem"><div style="width:110px;color:var(--dim)">{nm}</div><div style="flex:1;background:#E0E0E8;border-radius:4px;height:8px;margin:0 .5rem"><div style="width:{sc*10}%;background:var(--y);height:100%;border-radius:4px"></div></div><div style="width:30px;text-align:right">{sc}</div></div>', unsafe_allow_html=True)
-            if gb.get("feedback"):
-                st.caption(gb["feedback"])
+        if secondary.get("entry_id"):
+            st.caption(f"2순위: 입구 {secondary['entry_id']} — {secondary.get('entry_name', '')}: {secondary.get('reasoning', '')}")
 
-            st.markdown("#### 🚪 Gate C: Character Gate")
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                gc_avg = gc.get("average", 0)
-                cl = "var(--g)" if gc_avg >= 7.0 else "var(--r)"
-                lb = "PASS" if gc_avg >= 7.0 else "FAIL"
-                st.markdown(f'<div style="text-align:center"><div class="big" style="color:{cl}">{gc_avg}</div><div class="sm" style="color:{cl};font-size:1rem;font-weight:700">{lb}</div></div>', unsafe_allow_html=True)
-            with c2:
-                for nm, sc in [("주인공/적대자 논리",gc.get("protagonist_antagonist_logic",0)),("조연 입체성",gc.get("supporting_not_functional",0)),("관계축 갈등",gc.get("relationship_produces_conflict",0))]:
-                    st.markdown(f'<div style="display:flex;align-items:center;margin:.2rem 0;font-size:.8rem"><div style="width:110px;color:var(--dim)">{nm}</div><div style="flex:1;background:#E0E0E8;border-radius:4px;height:8px;margin:0 .5rem"><div style="width:{sc*10}%;background:var(--y);height:100%;border-radius:4px"></div></div><div style="width:30px;text-align:right">{sc}</div></div>', unsafe_allow_html=True)
-            if gc.get("feedback"):
-                st.caption(gc["feedback"])
+        st.markdown(f"**입력 재진술**: {classified.get('restated_input', '')}")
 
-            # 5축 스코어
-            st.markdown("---")
-            st.markdown("#### 📊 Development Fit Score")
-            final = fa.get("final_score", 0)
-            verdict = fa.get("verdict", "")
-            vc = {"개발 진행":"var(--g)","개발 보류":"var(--y)","구조 재설계":"var(--r)"}.get(verdict,"var(--dim)")
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                st.markdown(f'<div style="text-align:center"><div class="big">{final}</div><div class="sm" style="color:{vc};font-size:1rem;font-weight:700">{verdict}</div></div>', unsafe_allow_html=True)
-            with c2:
-                for nm, sc in [("Goal",fa.get("goal",0)),("Need",fa.get("need",0)),("Strategy",fa.get("strategy",0)),("Structure",fa.get("structure",0)),("Character/Concept",fa.get("character_concept",0))]:
-                    st.markdown(f'<div style="display:flex;align-items:center;margin:.2rem 0;font-size:.8rem"><div style="width:110px;color:var(--dim)">{nm}</div><div style="flex:1;background:#E0E0E8;border-radius:4px;height:8px;margin:0 .5rem"><div style="width:{sc*10}%;background:var(--y);height:100%;border-radius:4px"></div></div><div style="width:30px;text-align:right">{sc}</div></div>', unsafe_allow_html=True)
+        first_qs = classified.get("first_questions", [])
+        if first_qs:
+            st.markdown("**1차 사고 확장 질문 (다음 입구에서 답하실 것):**")
+            for q in first_qs:
+                st.markdown(f"- {q}")
 
-            # ═══════════════════════════════════════
-            # REALITY GATE (v2.7.0 신규)
-            # 위치 원칙: Core 직후 · Character Bible 이전.
-            #   Core에서 로그라인·시그니처 모먼트·엔딩 이미지가 확정되므로
-            #   Treatment 직전에 두면 되돌릴 비용이 너무 크다.
-            # ═══════════════════════════════════════
-            st.markdown("---")
-            st.markdown('<div class="section-header">🔍 Reality Gate <span class="en">사실성 검문</span></div>', unsafe_allow_html=True)
-            st.caption(
-                "LOCKED와 Core에 현실 제도·절차·직업 역할에 위배되는 전제가 있는지 점검합니다. "
-                "장르 관습·의도적 왜곡은 적출하지 않습니다. 채택 여부는 전적으로 작가가 결정합니다."
-            )
-
-            rg = project.get("reality_gate")
-
-            if not rg:
-                if st.button("🔍 Reality Gate 실행", key="run_reality_gate", use_container_width=True):
-                    with st.spinner("제도·절차 사실성 점검 중..."):
-                        rg_result = call_reality_gate(project, core)
-                    if rg_result:
-                        for _i, _iss in enumerate(rg_result.get("issues", []) or []):
-                            _iss["status"] = "pending"
-                        project["reality_gate"] = rg_result
-                        project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        st.rerun()
-                st.info(
-                    "건너뛰어도 Character Bible로 진행할 수 있습니다. "
-                    "다만 LOCKED에 사실 오류가 있으면 Treatment·Writer Engine까지 그대로 전파됩니다."
-                )
-            else:
-                rg_issues = rg.get("issues", []) or []
-                pending = [x for x in rg_issues if x.get("status", "pending") == "pending"]
-                applied = [x for x in rg_issues if x.get("status") == "applied"]
-                ignored = [x for x in rg_issues if x.get("status") == "ignored"]
-
-                if rg.get("verdict") == "CLEAR" or not rg_issues:
-                    st.success("✅ 사실성 위배 사항 없음. 제도·절차 층위에서 깨끗합니다.")
-                else:
-                    sev_color = {"CRITICAL": "var(--r)", "MAJOR": "var(--y)", "MINOR": "var(--dim)"}
-                    n_crit = len([x for x in rg_issues if x.get("severity") == "CRITICAL"])
-                    if n_crit:
-                        st.error(
-                            f"🔴 CRITICAL {n_crit}건 포함 총 {len(rg_issues)}건 적출. "
-                            "CRITICAL은 작품 전제 자체가 성립하지 않는 항목입니다."
-                        )
-                    else:
-                        st.warning(f"⚠️ {len(rg_issues)}건 적출. 미처리 {len(pending)}건.")
-
-                    for idx, iss in enumerate(rg_issues):
-                        sev = iss.get("severity", "MINOR")
-                        status = iss.get("status", "pending")
-                        badge = {"applied": "✅ 반영", "ignored": "⏭️ 무시", "pending": "● 미처리"}[status]
-                        with st.expander(
-                            f"{badge} · [{sev}] {iss.get('domain', '')} — {iss.get('error', '')[:40]}",
-                            expanded=(status == "pending" and sev == "CRITICAL")
-                        ):
-                            st.markdown(
-                                f'<div style="border-left:4px solid {sev_color.get(sev, "var(--dim)")};'
-                                f'padding-left:10px;font-size:.85rem">'
-                                f'<b>위치</b><br>{iss.get("location", "")}<br><br>'
-                                f'<b>오류</b><br>{iss.get("error", "")}<br><br>'
-                                f'<b>실제</b><br>{iss.get("reality", "")}<br><br>'
-                                f'<b>방치 시 영향</b><br>{iss.get("impact", "")}'
-                                f'</div>',
-                                unsafe_allow_html=True
-                            )
-                            alts = iss.get("alternatives", []) or []
-                            if alts:
-                                st.markdown("**대안 (원 설계 의도 보존)**")
-                                for ai, alt in enumerate(alts, 1):
-                                    st.markdown(f"{ai}. {alt}")
-
-                            sug = iss.get("suggested_locked", "")
-                            if sug:
-                                st.markdown("**LOCKED 교체안**")
-                                st.code(sug, language=None)
-
-                            if status == "pending":
-                                cA, cB = st.columns(2)
-                                with cA:
-                                    if st.button("✅ 이 교체안 LOCKED에 반영", key=f"rg_apply_{idx}", use_container_width=True):
-                                        loc = (iss.get("location") or "").strip()
-                                        cur_locked = project.get("locked_items", []) or []
-                                        hit = -1
-                                        if loc:
-                                            probe = loc[:20]
-                                            for li, litem in enumerate(cur_locked):
-                                                if probe and probe in litem:
-                                                    hit = li
-                                                    break
-                                        if hit >= 0 and sug:
-                                            cur_locked[hit] = sug
-                                            project["locked_items"] = cur_locked
-                                            iss["status"] = "applied"
-                                            iss["applied_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                                            project["updated_at"] = iss["applied_at"]
-                                            st.success("LOCKED 교체 완료. Core Build를 재실행해야 하류에 반영됩니다.")
-                                            st.rerun()
-                                        else:
-                                            iss["status"] = "applied"
-                                            st.warning(
-                                                "LOCKED에서 해당 항목을 자동으로 찾지 못했습니다. "
-                                                "아이디어 화면의 'LOCKED 편집'에서 위 교체안을 직접 반영해 주십시오."
-                                            )
-                                with cB:
-                                    if st.button("⏭️ 의도된 설정 — 무시", key=f"rg_ignore_{idx}", use_container_width=True):
-                                        iss["status"] = "ignored"
-                                        project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                                        st.rerun()
-
-                if rg.get("author_note"):
-                    st.caption(f"작가 의도로 판단된 항목: {rg['author_note']}")
-
-                if applied:
-                    st.warning(
-                        f"LOCKED가 {len(applied)}건 교체되었습니다. "
-                        "교체된 전제를 Core에 반영하려면 **Core Build 재실행**이 필요합니다. "
-                        "재실행하지 않으면 현재 Core는 교체 전 전제 위에 남아 있습니다."
-                    )
-
-                cR1, cR2 = st.columns(2)
-                with cR1:
-                    if st.button("🔄 Reality Gate 재실행", key="rerun_reality_gate", use_container_width=True):
-                        project["reality_gate"] = None
-                        st.rerun()
-                with cR2:
-                    if applied and st.button("🎯 Core Build 재실행 (교체 LOCKED 반영)", key="rg_core_rebuild", use_container_width=True):
-                        project["core"] = None
-                        project["core_gate"] = None
-                        project["reality_gate"] = None
-                        st.rerun()
-
-            st.markdown("---")
-
-            if verdict == "개발 진행":
-                st.success(f"✅ {verdict}. Character Bible 진행 가능.")
-
-                # v2.5.3: Core 완료 시점 JSON 저장
-                with st.expander("💾 프로젝트 JSON 저장 (Core 완료 시점)", expanded=False):
-                    st.caption(
-                        "Core Build까지 완료되었습니다. 여기서 JSON 파일을 저장하면 "
-                        "Character Bible 단계에서 문제가 생겨도 Core까지의 작업을 잃지 않습니다. "
-                        "다음에 홈 화면의 '프로젝트 불러오기'로 복원 후 Character Bible부터 이어서 진행할 수 있습니다."
-                    )
-                    title_safe_json = project.get("title", "프로젝트").replace(" ", "_")
-                    ts_json = datetime.now().strftime("%Y%m%d_%H%M")
-                    project_json_str = save_project_to_json(project)
-                    st.download_button(
-                        label="💾 프로젝트 저장 (Core 완료)",
-                        data=project_json_str.encode("utf-8"),
-                        file_name=f"{title_safe_json}_Core완료_{ts_json}.json",
-                        mime="application/json",
-                        use_container_width=True,
-                        key="dl_core",
-                    )
-
-                if st.button("📖 Character Bible 진행 →", type="primary", use_container_width=True):
-                    st.session_state.view = "char_bible"
-                    st.rerun()
-            elif verdict == "개발 보류":
-                st.warning(f"⚠️ {verdict}. Core Build 보강 필요.")
-
-                # v2.5.3: Core 보류 상태에서도 저장 가능
-                with st.expander("💾 프로젝트 JSON 저장 (Core 완료, Gate 보류)", expanded=False):
-                    st.caption("Gate B+C 보류 상태이지만 현재까지의 작업을 저장할 수 있습니다.")
-                    title_safe_json = project.get("title", "프로젝트").replace(" ", "_")
-                    ts_json = datetime.now().strftime("%Y%m%d_%H%M")
-                    project_json_str = save_project_to_json(project)
-                    st.download_button(
-                        label="💾 프로젝트 저장 (Core, Gate 보류)",
-                        data=project_json_str.encode("utf-8"),
-                        file_name=f"{title_safe_json}_Core_{ts_json}.json",
-                        mime="application/json",
-                        use_container_width=True,
-                        key="dl_core_hold",
-                    )
-
-                col_cv1, col_cv2 = st.columns(2)
-                with col_cv1:
-                    if st.button("🔓 Override → Character Bible"):
-                        st.session_state.view = "char_bible"
-                        st.rerun()
-                with col_cv2:
-                    if st.button("🔄 Core Build 재실행"):
-                        project["core"] = None
-                        project["core_gate"] = None
-                        st.rerun()
-            else:
-                st.error(f"🔴 {verdict}. Brainstorm 재검토 필요.")
-
-        else:
-            st.warning("⚠️ Gate B + C 채점이 완료되지 않았습니다.")
-            if st.button("🔄 Gate 재시도"):
-                with st.spinner("Gate B + C 채점 중..."):
-                    gate_result = call_core_gate(core)
-                if gate_result:
-                    project["core_gate"] = gate_result
-                    project["final_score"] = gate_result.get("five_axis_scores", {}).get("final_score")
+        col_go, col_alt = st.columns(2)
+        with col_go:
+            if st.button(f"→ 입구 {primary.get('entry_id', '1')}로 진입", key="goto_primary", type="primary", use_container_width=True):
+                st.session_state["hunter_entry"] = str(primary.get("entry_id", "1"))
+                st.rerun()
+        with col_alt:
+            if secondary.get("entry_id"):
+                if st.button(f"→ 입구 {secondary['entry_id']}로 진입 (2순위)", key="goto_secondary", use_container_width=True):
+                    st.session_state["hunter_entry"] = str(secondary["entry_id"])
                     st.rerun()
 
-    else:
-        st.markdown(
-            '<div style="text-align:center;padding:3rem 0;color:var(--dim)">'
-            '🎯 Core Build를 실행하면 여기에 결과가 표시됩니다.<br>'
-            'Logline Pack · Project Intent · World Build · Character Build'
-            '</div>',
-            unsafe_allow_html=True
-        )
-
+    # ── 입구 1~5 직접 카드 ──
     st.markdown("---")
-    st.caption(ENGINE_FOOTER)
-
-
-# ═══════════════════════════════════════════════════
-#  CHARACTER BIBLE
-# ═══════════════════════════════════════════════════
-elif st.session_state.view == "char_bible" and st.session_state.cur:
-
-    project = st.session_state.projects[st.session_state.cur]
-    core = project.get("core", {})
-
-    st.markdown(f"## {project['title']}")
-    st.caption(f"{project['genre']} · {project['target_market']} · {project['format']}")
-    render_stepper("char_bible", project)
-
-    lp = core.get("logline_pack", {})
-    if lp.get("washed"):
-        st.markdown(f'<div class="callout"><div class="cl">Logline</div>{lp["washed"]}</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown('<div class="section-header">📖 Character Bible <span class="en">CHARACTER DESIGN BIBLE</span></div>', unsafe_allow_html=True)
-    st.caption("백스토리 · 비밀 · 말투 규칙 · 대사 샘플 · 관계 태도 · 변화 궤적 — Writer Engine이 일관된 인물을 쓰기 위한 설계서")
-
-    if not project.get("char_bible"):
-        if st.button("📖 Character Bible 생성", type="primary"):
-            with st.spinner("캐릭터 바이블 설계 중... (캐릭터당 약 30초, 4–8명 기준 약 2–4분)"):
-                result = call_character_bible(
-                    core, project["genre"], project["format"],
-                    locked_block=_build_project_locked_block(project),
-                    fact_based=project.get("fact_based", False),
-                    historical=project.get("historical", False),
-                    film_type=project.get("film_type", ""),
-                )
-            if result:
-                project["char_bible"] = result
-                project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                st.rerun()
-
-    bible = project.get("char_bible", {})
-    if bible:
-        chars = bible.get("characters", [])
-        role_labels = {"protagonist":"주인공","antagonist":"적대자","ally":"조력자","mirror":"거울","catalyst":"촉매자","subplot_lead":"서브플롯 리드"}
-        role_emoji = {"protagonist":"🔥","antagonist":"🖤","ally":"💙","mirror":"🪞","catalyst":"⚡","subplot_lead":"🌐"}
-
-        for ch in chars:
-            role = role_labels.get(ch.get("role",""), ch.get("role",""))
-            emoji = role_emoji.get(ch.get("role",""), "👤")
-            name = ch.get("name", "")
-            age = ch.get("age", "")
-
-            st.markdown(f'<div class="section-header">{emoji} {role}: {name} ({age}) <span class="en">{ch.get("role","").upper()}</span></div>', unsafe_allow_html=True)
-
-            # 외형 & 직업
-            st.markdown(f'<div class="callout"><div class="cl">외형 · 첫인상</div>{ch.get("appearance","")}</div>', unsafe_allow_html=True)
-            if ch.get("occupation"):
-                st.markdown(f'<div class="ri"><div class="rl">직업/위치</div>{ch.get("occupation","")}</div>', unsafe_allow_html=True)
-
-            # 욕망/결핍/결점
-            c1, c2, c3 = st.columns(3)
-            c1.markdown(f'<div class="callout"><div class="cl">GOAL</div>{ch.get("goal","")}</div>', unsafe_allow_html=True)
-            c2.markdown(f'<div class="callout"><div class="cl">NEED</div>{ch.get("need","")}</div>', unsafe_allow_html=True)
-            c3.markdown(f'<div class="callout"><div class="cl">FLAW</div>{ch.get("flaw","")}</div>', unsafe_allow_html=True)
-
-            # 백스토리
-            st.markdown(f'<div class="card"><div class="cl">📜 백스토리</div><p style="line-height:1.7">{ch.get("backstory","")}</p></div>', unsafe_allow_html=True)
-
-            # 비밀 & 신념 & 두려움
-            c4, c5, c6 = st.columns(3)
-            c4.markdown(f'<div class="ri"><div class="rl">🔒 비밀</div>{ch.get("secret","")}</div>', unsafe_allow_html=True)
-            c5.markdown(f'<div class="ri"><div class="rl">⚖️ 신념</div>{ch.get("belief","")}</div>', unsafe_allow_html=True)
-            c6.markdown(f'<div class="ri"><div class="rl">😰 두려움</div>{ch.get("fear","")}</div>', unsafe_allow_html=True)
-
-            # 습관
-            habits = ch.get("habits", [])
-            if habits:
-                habits_html = " · ".join(habits) if isinstance(habits, list) else str(habits)
-                st.markdown(f'<div class="ri"><div class="rl">🔄 반복 습관</div>{habits_html}</div>', unsafe_allow_html=True)
-
-            # 말투 규칙
-            sp = ch.get("speech_pattern", [])
-            if sp:
-                sp_list = sp if isinstance(sp, list) else [sp]
-                sp_html = "<br>".join([f"• {s}" for s in sp_list])
-                st.markdown(f'<div class="card"><div class="cl">🗣️ 말투 규칙 (SPEECH PATTERN)</div>{sp_html}</div>', unsafe_allow_html=True)
-
-            # 대사 샘플
-            sl = ch.get("sample_lines", {})
-            if sl:
-                sl_labels = {"normal":"평상시","angry":"분노","vulnerable":"취약"}
-                sl_html = ""
-                for k, v in sl.items():
-                    label = sl_labels.get(k, k)
-                    sl_html += f'<div style="margin:.3rem 0"><b style="color:var(--navy);font-size:.75rem">[{label}]</b> <i>\u2018{v}\u2019</i></div>'
-                st.markdown(f'<div class="card"><div class="cl">💬 대사 샘플 (SAMPLE LINES)</div>{sl_html}</div>', unsafe_allow_html=True)
-
-            # 관계별 태도
-            ra = ch.get("relationship_attitudes", [])
-            if ra:
-                ra_list = ra if isinstance(ra, list) else [ra]
-                ra_html = "<br>".join([f"• {r}" for r in ra_list])
-                st.markdown(f'<div class="card"><div class="cl">🔗 관계별 태도</div>{ra_html}</div>', unsafe_allow_html=True)
-
-            # 변화 궤적
-            arc = ch.get("arc_detail", {})
-            if arc:
-                st.markdown(
-                    f'<div class="card"><div class="cl">📈 변화 궤적 (ARC)</div>'
-                    f'<div style="margin:.3rem 0"><b style="color:var(--navy);font-size:.75rem">[1막 끝]</b> {arc.get("act1_end","")}</div>'
-                    f'<div style="margin:.3rem 0"><b style="color:var(--navy);font-size:.75rem">[미드포인트]</b> {arc.get("midpoint","")}</div>'
-                    f'<div style="margin:.3rem 0"><b style="color:var(--navy);font-size:.75rem">[클라이맥스]</b> {arc.get("climax","")}</div>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-            st.markdown("")  # spacer
-
-        # ── 캐릭터 관계도 ──
-        st.markdown("---")
-        st.markdown('<div class="section-header">🕸️ 캐릭터 관계도 <span class="en">CHARACTER MAP</span></div>', unsafe_allow_html=True)
-
-        def render_relationship_map(chars):
-            import math, html as _html
-
-            role_colors = {
-                "protagonist": "#FFCB05",
-                "antagonist":  "#D32F2F",
-                "ally":        "#2EC484",
-                "mirror":      "#7B68EE",
-                "catalyst":    "#FF8C00",
-                "subplot_lead":"#20B2AA",
-            }
-            role_labels_kr = {
-                "protagonist":"주인공","antagonist":"적대자","ally":"조력자",
-                "mirror":"거울","catalyst":"촉매자","subplot_lead":"서브플롯",
-            }
-
-            # 관계 키워드 → 유형 매핑
-            def classify_rel(text):
-                t = text.lower()
-                if any(k in t for k in ["죽이","살해","적","증오","혐오","원수","복수","배신","이용","조종","견제"]):
-                    return "hostile"
-                if any(k in t for k in ["사랑","좋아","연인","설레","끌","호감","연모","연인"]):
-                    return "love"
-                if any(k in t for k in ["돕","협력","신뢰","지지","동료","우정","친구","함께","의지"]):
-                    return "ally"
-                if any(k in t for k in ["질투","경쟁","라이벌","갈등","충돌","대립"]):
-                    return "rival"
-                if any(k in t for k in ["가르","멘토","스승","보호","이끌","안내"]):
-                    return "mentor"
-                return "neutral"
-
-            rel_style = {
-                "hostile": {"color":"#D32F2F","label":"⚔️ 적대","dash":"8,4"},
-                "love":    {"color":"#FF69B4","label":"❤️ 사랑","dash":"0"},
-                "ally":    {"color":"#2EC484","label":"🤝 협력","dash":"0"},
-                "rival":   {"color":"#FF8C00","label":"🥊 경쟁","dash":"6,3"},
-                "mentor":  {"color":"#7B68EE","label":"🎓 멘토","dash":"0"},
-                "neutral": {"color":"#AAAAAA","label":"— 중립","dash":"4,4"},
-            }
-
-            n = len(chars)
-            if n == 0:
-                return
-
-            # 원형 배치 좌표 계산
-            cx, cy, r = 400, 300, 200
-            positions = []
-            for i in range(n):
-                angle = (2 * math.pi * i / n) - math.pi / 2
-                x = cx + r * math.cos(angle)
-                y = cy + r * math.sin(angle)
-                positions.append((x, y))
-
-            # 관계 엣지 파싱
-            edges = []
-            for i, ch in enumerate(chars):
-                ra = ch.get("relationship_attitudes", [])
-                if isinstance(ra, list):
-                    for rel_text in ra:
-                        for j, other in enumerate(chars):
-                            if i == j:
-                                continue
-                            other_name = other.get("name", "")
-                            if other_name and other_name in rel_text:
-                                rel_type = classify_rel(rel_text)
-                                short = rel_text.replace(f"→ {other_name}:", "").replace(f"→{other_name}:", "").strip()
-                                short = short[:30] + "…" if len(short) > 30 else short
-                                edges.append((i, j, rel_type, short))
-
-            # SVG 생성
-            svg_lines = [
-                f'<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg" '
-                f'style="width:100%;max-width:800px;background:#F7F7F5;border-radius:16px;'
-                f'border:1px solid #E2E2E0;font-family:Pretendard,sans-serif">',
-                '<defs>',
-            ]
-            # 화살표 마커
-            for rtype, rs in rel_style.items():
-                svg_lines.append(
-                    f'<marker id="arr_{rtype}" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">'
-                    f'<path d="M0,0 L0,6 L8,3 z" fill="{rs["color"]}"/></marker>'
-                )
-            svg_lines.append('</defs>')
-
-            # 엣지 선
-            drawn = set()
-            for (i, j, rtype, label) in edges:
-                key = tuple(sorted([i, j]))
-                rs = rel_style[rtype]
-                x1, y1 = positions[i]
-                x2, y2 = positions[j]
-                # 살짝 오프셋 (양방향 선 구분)
-                offset = 8 if (i, j) > (j, i) else -8
-                mx = (x1 + x2) / 2 + offset * ((y2 - y1) / max(abs(x2 - x1) + abs(y2 - y1), 1))
-                my = (y1 + y2) / 2 - offset * ((x2 - x1) / max(abs(x2 - x1) + abs(y2 - y1), 1))
-
-                dash_attr = f'stroke-dasharray="{rs["dash"]}"' if rs["dash"] != "0" else ""
-                svg_lines.append(
-                    f'<line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" '
-                    f'stroke="{rs["color"]}" stroke-width="2" {dash_attr} '
-                    f'marker-end="url(#arr_{rtype})" opacity="0.7"/>'
-                )
-                # 관계 레이블
-                escaped = _html.escape(label)
-                svg_lines.append(
-                    f'<text x="{mx:.0f}" y="{my:.0f}" text-anchor="middle" '
-                    f'font-size="9" fill="{rs["color"]}" font-weight="600" '
-                    f'style="paint-order:stroke" stroke="white" stroke-width="3">'
-                    f'{escaped}</text>'
-                )
-
-            # 노드 원
-            node_r = 44
-            for i, ch in enumerate(chars):
-                x, y = positions[i]
-                role = ch.get("role", "neutral")
-                color = role_colors.get(role, "#888888")
-                name = _html.escape(ch.get("name", f"캐릭터{i+1}"))
-                role_kr = role_labels_kr.get(role, role)
-
-                # 외곽 링
-                svg_lines.append(
-                    f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{node_r+4}" '
-                    f'fill="{color}" opacity="0.15"/>'
-                )
-                # 메인 원
-                svg_lines.append(
-                    f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{node_r}" '
-                    f'fill="white" stroke="{color}" stroke-width="3"/>'
-                )
-                # 이름
-                svg_lines.append(
-                    f'<text x="{x:.0f}" y="{y-6:.0f}" text-anchor="middle" '
-                    f'font-size="13" font-weight="900" fill="#191970">{name}</text>'
-                )
-                # 역할
-                svg_lines.append(
-                    f'<text x="{x:.0f}" y="{y+10:.0f}" text-anchor="middle" '
-                    f'font-size="10" fill="{color}" font-weight="700">{role_kr}</text>'
-                )
-
-            svg_lines.append('</svg>')
-
-            # 범례
-            legend_items = []
-            used_types = {e[2] for e in edges}
-            for rtype in ["love","ally","mentor","rival","hostile","neutral"]:
-                if rtype in used_types:
-                    rs = rel_style[rtype]
-                    legend_items.append(
-                        f'<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;">'
-                        f'<svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" '
-                        f'stroke="{rs["color"]}" stroke-width="2.5" '
-                        f'stroke-dasharray="{rs["dash"] if rs["dash"] != "0" else ""}"/></svg>'
-                        f'<span style="font-size:0.78rem;color:#444">{rs["label"]}</span></span>'
-                    )
-
-            svg_html = "\n".join(svg_lines)
-            legend_html = "".join(legend_items)
-
-            st.markdown(
-                f'<div style="text-align:center">{svg_html}</div>'
-                f'<div style="text-align:center;margin-top:8px;padding:8px 0">{legend_html}</div>',
-                unsafe_allow_html=True
-            )
-
-        render_relationship_map(chars)
-
-        # Structure 진행 버튼
-        st.markdown("---")
-        st.success("✅ Character Bible 완료. Structure Build 진행 가능.")
-
-        # v2.5.3: Character Bible 완료 시점 JSON 저장
-        with st.expander("💾 프로젝트 JSON 저장 (Character Bible 완료 시점)", expanded=False):
-            st.caption(
-                "Character Bible까지 완료되었습니다. 여기서 JSON 파일을 저장하면 "
-                "Structure 단계에서 문제가 생겨도 Character Bible까지의 작업을 잃지 않습니다. "
-                "다음에 홈 화면의 '프로젝트 불러오기'로 복원 후 Structure부터 이어서 진행할 수 있습니다."
-            )
-            title_safe_json = project.get("title", "프로젝트").replace(" ", "_")
-            ts_json = datetime.now().strftime("%Y%m%d_%H%M")
-            project_json_str = save_project_to_json(project)
-            st.download_button(
-                label="💾 프로젝트 저장 (Character Bible 완료)",
-                data=project_json_str.encode("utf-8"),
-                file_name=f"{title_safe_json}_Bible완료_{ts_json}.json",
-                mime="application/json",
-                use_container_width=True,
-                key="dl_bible",
-            )
-
-        if st.button("🏗️ Structure Build 진행 →", type="primary", use_container_width=True):
-            st.session_state.view = "structure"
-            st.rerun()
-
-    else:
-        st.markdown(
-            '<div style="text-align:center;padding:3rem 0;color:var(--dim)">'
-            '📖 Character Bible을 생성하면 여기에 결과가 표시됩니다.<br>'
-            '백스토리 · 비밀 · 말투 규칙 · 대사 샘플 · 관계 태도 · 변화 궤적'
-            '</div>',
-            unsafe_allow_html=True
-        )
-
-    st.markdown("---")
-    st.caption(ENGINE_FOOTER)
-
-
-# ═══════════════════════════════════════════════════
-#  STRUCTURE BUILD
-# ═══════════════════════════════════════════════════
-elif st.session_state.view == "structure" and st.session_state.cur:
-
-    project = st.session_state.projects[st.session_state.cur]
-    core = project.get("core", {})
-
-    st.markdown(f"## {project['title']}")
-    st.caption(f"{project['genre']} · {project['target_market']} · {project['format']}")
-    render_stepper("structure", project)
-
-    gns = core.get("goal_need_strategy", {})
-    lp = core.get("logline_pack", {})
-    if lp.get("washed"):
-        st.markdown(f'<div class="callout"><div class="cl">Logline</div>{lp["washed"]}</div>', unsafe_allow_html=True)
-    if gns:
-        c1, c2, c3 = st.columns(3)
-        c1.markdown(f'<div class="callout"><div class="cl">GOAL</div>{gns.get("goal","")}</div>', unsafe_allow_html=True)
-        c2.markdown(f'<div class="callout"><div class="cl">NEED</div>{gns.get("need","")}</div>', unsafe_allow_html=True)
-        c3.markdown(f'<div class="callout"><div class="cl">STRATEGY</div>{gns.get("strategy","")}</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown('<div class="section-header">🏗️ Structure Build <span class="en">STORY STRUCTURE</span></div>', unsafe_allow_html=True)
-    st.caption("시놉시스 · 스토리라인 · 3막 구조 · 15비트 · 캐릭터 변화표를 설계합니다.")
-
-    # ─── 포맷 미지정 차단 (v2.7.1 신규) ───
-    # 진단: get_beat_structure()는 "시리즈"·"미니"가 없으면 전부 영화 구조로 폴백한다.
-    #   "미지정"은 보류가 아니라 묵시적 "영화" 확정이었다. 조용한 폴백이 가장 위험하다.
-    if project.get("format", "미지정") in ("", "미지정"):
-        st.error(
-            "📐 **포맷이 확정되지 않았습니다.**\n\n"
-            "Structure Build부터는 포맷에 따라 비트 구조 자체가 달라집니다 "
-            "(영화 = 3막 16비트 / 시리즈 = 에피소드 단위). "
-            "미지정 상태로 진행하면 영화 구조가 자동 적용되며, "
-            "나중에 시리즈로 바꾸면 이 단계부터 전부 재실행해야 합니다."
-        )
-        if st.button("📐 포맷 확정하러 가기 →", type="primary", use_container_width=True):
-            st.session_state.view = "project"
-            st.rerun()
-        st.stop()
-
-    if st.button("🏗️ Structure Build 실행", type="primary"):
-        if not core:
-            st.error("Core Build가 없습니다.")
-        else:
-            with st.spinner("① 시놉시스 + 스토리라인... (20–30초)"):
-                story = call_structure_story(
-                    core, project["genre"], project["target_market"], project["format"],
-                    locked_block=_build_project_locked_block(project),
-                    fact_based=project.get("fact_based", False),
-                    historical=project.get("historical", False),
-                    film_type=project.get("film_type", ""),
-                )
-            if story:
-                project["structure_story"] = story
-                with st.spinner("② 구조 진단 + 캐릭터 변화표... (20–30초)"):
-                    diag = call_structure_diagnosis(
-                        core, story, project["genre"], project["format"],
-                        locked_block=_build_project_locked_block(project),
-                        fact_based=project.get("fact_based", False),
-                        historical=project.get("historical", False),
-                        film_type=project.get("film_type", ""),
-                    )
-                if diag:
-                    project["structure_diag"] = diag
-                    with st.spinner("③ Gate D 채점... (10초)"):
-                        gate_d = call_structure_gate(story, diag)
-                    if gate_d:
-                        project["structure_gate"] = gate_d
-                with st.spinner("④ 기승전결 줄글 시놉시스... (10–15초)"):
-                    prose = call_structure_prose(core, story)
-                if prose:
-                    project["structure_prose"] = prose
-                project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                st.rerun()
-
-    if project.get("structure_story"):
-        story = project["structure_story"]
-        st.markdown("#### 📖 Synopsis 1P")
-        syn = story.get("synopsis_1p", {})
-        for label, key in [("시작","opening"),("촉발사건","catalyst"),("전개","development"),("미드포인트","midpoint"),("붕괴","collapse"),("결전","climax"),("결말","ending")]:
-            val = syn.get(key, "")
-            if val:
-                st.markdown(f'<div class="callout"><div class="cl">{label}</div>{val}</div>', unsafe_allow_html=True)
-
-        st.markdown("#### 📊 스토리라인 (시퀀스 방향)")
-        for seq in story.get("storyline", []):
-            st.markdown(f'<div class="card"><div class="cl">SEQ {seq.get("seq","")} · {seq.get("label","")} ({seq.get("pages","")})</div>{seq.get("summary","")}<br><span style="font-size:.8rem;color:#666">⚔️ {seq.get("conflict","")} · 💭 {seq.get("emotion","")} · → {seq.get("hook","")}</span></div>', unsafe_allow_html=True)
-
-    if project.get("structure_diag"):
-        diag = project["structure_diag"]
-        st.markdown("#### 🎬 3막 구조 진단")
-        ta = diag.get("three_act", {})
-        for label, key in [("1막 끝","act1_end"),("미드포인트","act2_midpoint"),("All Is Lost","act2_end"),("클라이맥스","act3_climax")]:
-            val = ta.get(key, "")
-            if val:
-                st.markdown(f'<div class="callout"><div class="cl">{label}</div>{val}</div>', unsafe_allow_html=True)
-        if ta.get("diagnosis"):
-            st.caption(f"진단: {ta['diagnosis']}")
-
-        st.markdown("#### 🥁 15-Beat Sheet")
-        for bt in diag.get("beat_sheet", []):
-            status = bt.get("status", "")
-            color = {"있음":"var(--g)","약함":"var(--y)","없음":"var(--r)"}.get(status, "var(--dim)")
-            st.markdown(
-                f'<div style="margin:.3rem 0;font-size:.85rem">'
-                f'<span style="color:{color};font-weight:700">[{status}]</span> '
-                f'<b>{bt.get("beat","")}</b> — '
-                f'<span style="color:#666">{bt.get("note","")}</span>'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-
-        # 캐릭터 변화표
-        arcs = diag.get("character_arcs", [])
-        if arcs:
-            st.markdown("#### 🎭 캐릭터 변화표")
-            role_labels = {"protagonist":"주인공","antagonist":"적대자","ally":"조력자","mirror":"거울","catalyst":"촉매자","subplot_lead":"서브플롯 리드"}
-            for arc in arcs:
-                role = role_labels.get(arc.get("role",""), arc.get("role",""))
-                arc_type = arc.get("arc_type", "")
-                st.markdown(
-                    f'<div class="card">'
-                    f'<div class="cl">{role}: {arc.get("name","")} [{arc_type}]</div>'
-                    f'<span style="font-size:.8rem;color:#666">'
-                    f'1막: {arc.get("act1_state","")}<br>'
-                    f'전환: {arc.get("turning_point","")}<br>'
-                    f'3막: {arc.get("act3_state","")}'
-                    f'</span></div>',
-                    unsafe_allow_html=True
-                )
-
-        # 관계 변화표
-        rels = diag.get("relationship_changes", [])
-        if rels:
-            st.markdown("#### 🔗 관계 변화표")
-            for rel in rels:
-                st.markdown(
-                    f'<div class="card">'
-                    f'<div class="cl">{rel.get("pair","")}</div>'
-                    f'<span style="font-size:.8rem;color:#666">'
-                    f'1막: {rel.get("act1","")} → '
-                    f'미드: {rel.get("midpoint","")} → '
-                    f'3막: {rel.get("act3","")}'
-                    f'</span></div>',
-                    unsafe_allow_html=True
-                )
-
-    # 기승전결 줄글 시놉시스
-    if project.get("structure_prose"):
-        prose_data = project["structure_prose"]
-        if prose_data.get("prose"):
-            st.markdown("#### 📝 기승전결 시놉시스 (1P 줄글)")
-            st.markdown(f'<div class="callout" style="line-height:1.8;font-size:.9rem">{prose_data["prose"]}</div>', unsafe_allow_html=True)
-
-    if project.get("structure_gate"):
-        sg = project["structure_gate"]
-        gd = sg.get("gate_d_structure", {})
-        gd_avg = gd.get("average", 0)
-        gd_ok = gd_avg >= 7.0
-        st.markdown("---")
-        st.markdown("#### 🚪 Gate D: Structure Gate")
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            cl = "var(--g)" if gd_ok else "var(--r)"
-            st.markdown(f'<div style="text-align:center"><div class="big" style="color:{cl}">{gd_avg}</div><div class="sm" style="color:{cl};font-size:1rem;font-weight:700">{"PASS" if gd_ok else "FAIL"}</div></div>', unsafe_allow_html=True)
-        with c2:
-            for nm, sc in [("전환점",gd.get("turning_points_valid",0)),("Midpoint",gd.get("midpoint_redirects",0)),("All Is Lost",gd.get("all_is_lost_works",0)),("결말",gd.get("ending_inevitable_surprising",0))]:
-                st.markdown(f'<div style="display:flex;align-items:center;margin:.2rem 0;font-size:.8rem"><div style="width:80px;color:var(--dim)">{nm}</div><div style="flex:1;background:#E0E0E8;border-radius:4px;height:8px;margin:0 .5rem"><div style="width:{sc*10}%;background:var(--y);height:100%;border-radius:4px"></div></div><div style="width:30px;text-align:right">{sc}</div></div>', unsafe_allow_html=True)
-        if gd.get("feedback"):
-            st.caption(gd["feedback"])
-
-        if gd_ok:
-            st.success("✅ Gate D 통과. Scene Design 진행 가능.")
-
-            # v2.5.3: Structure 완료 시점 JSON 저장
-            with st.expander("💾 프로젝트 JSON 저장 (Structure 완료 시점)", expanded=False):
-                st.caption(
-                    "Structure Build까지 완료되었습니다. 여기서 JSON 파일을 저장하면 "
-                    "Scene Design 단계에서 문제가 생겨도 Structure까지의 작업을 잃지 않습니다."
-                )
-                title_safe_json = project.get("title", "프로젝트").replace(" ", "_")
-                ts_json = datetime.now().strftime("%Y%m%d_%H%M")
-                project_json_str = save_project_to_json(project)
-                st.download_button(
-                    label="💾 프로젝트 저장 (Structure 완료)",
-                    data=project_json_str.encode("utf-8"),
-                    file_name=f"{title_safe_json}_Structure완료_{ts_json}.json",
-                    mime="application/json",
-                    use_container_width=True,
-                    key="dl_structure",
-                )
-
-            if st.button("🎬 Scene Design 진행 →", type="primary", use_container_width=True):
-                st.session_state.view = "scene_design"
-                st.rerun()
-        else:
-            st.warning(f"⚠️ Gate D 미통과 (평균 {gd_avg}).")
-
-            # v2.5.3: Gate D 미통과 시에도 저장 가능
-            with st.expander("💾 프로젝트 JSON 저장 (Structure 완료, Gate D 보류)", expanded=False):
-                st.caption("Gate D 미통과 상태이지만 현재까지의 작업을 저장할 수 있습니다.")
-                title_safe_json = project.get("title", "프로젝트").replace(" ", "_")
-                ts_json = datetime.now().strftime("%Y%m%d_%H%M")
-                project_json_str = save_project_to_json(project)
-                st.download_button(
-                    label="💾 프로젝트 저장 (Structure, Gate D 보류)",
-                    data=project_json_str.encode("utf-8"),
-                    file_name=f"{title_safe_json}_Structure_{ts_json}.json",
-                    mime="application/json",
-                    use_container_width=True,
-                    key="dl_structure_hold",
-                )
-
-            col_sd1, col_sd2 = st.columns(2)
-            with col_sd1:
-                if st.button("🔓 Override → Scene Design"):
-                    st.session_state.view = "scene_design"
-                    st.rerun()
-            with col_sd2:
-                if st.button("🔄 Structure 재실행"):
-                    for k in ["structure_story","structure_diag","structure_gate","structure_prose"]:
-                        project[k] = None
-                    st.rerun()
-
-        # DOCX 1차 다운로드
-        st.markdown("---")
-        st.markdown("#### 📥 기획개발보고서 [1차] 다운로드")
-        st.caption("Core Build + Structure Build까지의 기획서입니다. 다운로드 후 직접 수정/보강하세요.")
-        st.markdown(
-            '<div class="callout">'
-            '<div class="cl">💡 1차 기획서 활용법</div>'
-            '다운로드한 기획서를 검토하고, 추가하고 싶은 요소(예: 사이렌, 특정 장치, 캐릭터 보강 등)를 '
-            '직접 수정하세요. 수정이 끝나면 Scene Design → Treatment로 진행하여 최종 기획서를 완성합니다.'
-            '</div>',
-            unsafe_allow_html=True
-        )
-        title_safe = project.get("title", "프로젝트").replace(" ", "_")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        docx_buffer = generate_docx(project)
-        st.download_button(
-            label="📥 기획개발보고서 [1차] 다운로드 (.docx)",
-            data=docx_buffer,
-            file_name=f"기획개발보고서_{title_safe}_1차_Blue_{timestamp}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True
-        )
-
-    elif not project.get("structure_story"):
-        st.markdown('<div style="text-align:center;padding:3rem 0;color:var(--dim)">🏗️ Structure Build를 실행하면 여기에 결과가 표시됩니다.</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.caption(ENGINE_FOOTER)
-
-
-# ═══════════════════════════════════════════════════
-#  SCENE DESIGN (장면화)
-# ═══════════════════════════════════════════════════
-elif st.session_state.view == "scene_design" and st.session_state.cur:
-
-    project = st.session_state.projects[st.session_state.cur]
-    core = project.get("core", {})
-    story = project.get("structure_story", {})
-    diag = project.get("structure_diag", {})
-
-    st.markdown(f"## {project['title']}")
-    st.caption(f"{project['genre']} · {project['target_market']} · {project['format']}")
-    render_stepper("scene_design", project)
-
-    gns = core.get("goal_need_strategy", {})
-    lp = core.get("logline_pack", {})
-    if lp.get("washed"):
-        st.markdown(f'<div class="callout"><div class="cl">Logline</div>{lp["washed"]}</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown('<div class="section-header">🎬 Scene Design <span class="en">SCENE DESIGN</span></div>', unsafe_allow_html=True)
-    st.caption("Show, don't tell — 핵심 장면의 극적 행동 · 반전 · 시각 연출을 설계합니다.")
-
-    if st.button("🎬 Scene Design 실행", type="primary"):
-        if not story:
-            st.error("Structure Build가 없습니다.")
-        else:
-            with st.spinner("핵심 장면 설계 중... (약 30–40초)"):
-                sd = call_scene_design(
-                    core, story, diag, project["genre"], project["format"],
-                    locked_block=_build_project_locked_block(project),
-                    fact_based=project.get("fact_based", False),
-                    historical=project.get("historical", False),
-                    film_type=project.get("film_type", ""),
-                )
-            if sd:
-                project["scene_design"] = sd
-                project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                st.rerun()
-
-    # ── Scene Design 결과 표시 ──
-    if project.get("scene_design"):
-        sd = project["scene_design"]
-        scenes = sd.get("key_scenes", [])
-        sms = sd.get("scene_map_summary", {})
-
-        # 장면 맵 요약
-        if sms:
-            st.markdown("#### 🗺️ Scene Map")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.markdown(f'<div class="callout"><div class="cl">1막</div>{sms.get("act1_scenes","")}</div>', unsafe_allow_html=True)
-            c2.markdown(f'<div class="callout"><div class="cl">2막 전반</div>{sms.get("act2a_scenes","")}</div>', unsafe_allow_html=True)
-            c3.markdown(f'<div class="callout"><div class="cl">2막 후반</div>{sms.get("act2b_scenes","")}</div>', unsafe_allow_html=True)
-            c4.markdown(f'<div class="callout"><div class="cl">3막</div>{sms.get("act3_scenes","")}</div>', unsafe_allow_html=True)
-
-            if sms.get("must_see_scenes"):
-                st.markdown(f'<div class="callout" style="border-left-color:var(--y)"><div class="cl">⭐ Must-See 장면</div>{sms["must_see_scenes"]}</div>', unsafe_allow_html=True)
-
-        # 핵심 장면 카드
-        st.markdown(f"#### 🎬 핵심 장면 ({len(scenes)}개)")
-        for sc in scenes:
-            tp = sc.get("turning_point", "")
-            tp_html = f'<br>🔄 <b>전환:</b> {tp}' if tp else ""
-            di = sc.get("dramatic_irony", "")
-            di_html = f'<br>👁️ <b>아이러니:</b> <i>{di}</i>' if di else ""
-            kl = sc.get("key_line", "")
-            kl_html = f'<br><span style="color:var(--navy);font-weight:600">💬 "{kl}"</span>' if kl else ""
-            st.markdown(
-                f'<div class="card">'
-                f'<div class="cl">S#{sc.get("scene_no","")} · {sc.get("sequence","")} · {sc.get("location","")}</div>'
-                f'<b>{sc.get("title","")}</b> — {sc.get("characters","")}<br>'
-                f'<span style="font-size:.85rem">'
-                f'📍 {sc.get("setup","")}<br>'
-                f'🎭 <b>행동:</b> {sc.get("dramatic_action","")}'
-                f'{tp_html}'
-                f'{di_html}<br>'
-                f'💭 {sc.get("emotion_shift","")}<br>'
-                f'🎥 {sc.get("visual_direction","")}<br>'
-                f'⚡ 판돈: {sc.get("stakes","")}'
-                f'{kl_html}<br>'
-                f'→ {sc.get("connection","")}'
-                f'</span></div>',
-                unsafe_allow_html=True
-            )
-
-        st.markdown("---")
-
-        # JSON 프로젝트 저장 (세션 끊김 대비)
-        st.markdown("#### 💾 프로젝트 JSON 저장 (세션 복구용)")
-        st.caption(
-            "브라우저를 닫거나 세션이 끊겨도 여기서 JSON 파일을 저장하면 "
-            "다음에 홈 화면의 '프로젝트 불러오기'로 복원 후 Treatment부터 이어서 진행할 수 있습니다."
-        )
-        title_safe_json = project.get("title", "프로젝트").replace(" ", "_")
-        ts_json = datetime.now().strftime("%Y%m%d_%H%M")
-        project_json_str = save_project_to_json(project)
-        st.download_button(
-            label="💾 프로젝트 저장 (Scene 완료 시점)",
-            data=project_json_str.encode("utf-8"),
-            file_name=f"{title_safe_json}_Scene완료_{ts_json}.json",
-            mime="application/json",
-            use_container_width=True,
-        )
-
-        st.markdown("---")
-
-        # Treatment 진행
-        st.success("✅ Scene Design 완료. Treatment Build 진행 가능.")
-        if st.button("📝 Treatment Build 진행 →", type="primary", use_container_width=True):
-            st.session_state.view = "treatment"
-            st.rerun()
-
-    else:
-        st.markdown(
-            '<div style="text-align:center;padding:3rem 0;color:var(--dim)">'
-            '🎬 Scene Design을 실행하면 여기에 핵심 장면이 표시됩니다.<br>'
-            'Show, don\'t tell — 행동 · 반전 · 시각 연출'
-            '</div>',
-            unsafe_allow_html=True
-        )
-
-    st.markdown("---")
-    st.caption(ENGINE_FOOTER)
-
-
-# ═══════════════════════════════════════════════════
-#  TREATMENT BUILD
-# ═══════════════════════════════════════════════════
-elif st.session_state.view == "treatment" and st.session_state.cur:
-
-    project = st.session_state.projects[st.session_state.cur]
-    core = project.get("core", {})
-    story = project.get("structure_story", {})
-    diag = project.get("structure_diag", {})
-
-    st.markdown(f"## {project['title']}")
-    st.caption(f"{project['genre']} · {project['target_market']} · {project['format']}")
-    render_stepper("treatment", project)
-
-    # 요약 정보
-    gns = core.get("goal_need_strategy", {})
-    lp = core.get("logline_pack", {})
-    if lp.get("washed"):
-        st.markdown(f'<div class="callout"><div class="cl">Logline</div>{lp["washed"]}</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown('<div class="section-header">📝 Treatment Build <span class="en">16-BEAT TREATMENT</span></div>', unsafe_allow_html=True)
-    st.caption("16비트 구조 × 줄글 트리트먼트. 1막(6비트) + 2막(6비트) + 3막(4비트) = 약 40–50페이지")
-
-    scene_data = project.get("scene_design", {})
-
-    # ── v2.6.3: 막별 독립 실행 버튼 (Mr. MOON 요청) ──
-    # v2.6.2의 막별 증분 저장(treatment_partial) 위에 실행 단위를 분리.
-    #   ①②③ 각 막을 독립 버튼으로 생성 — 한 클릭 = Opus 호출 1회 (재시도 포함 최대 3회)
-    #   ④ 3개 막이 모이면 '확정' 버튼 등장 — 메타 + Writer 인계 + Gate E 실행 후 확정
-    # 효과: JSON 파싱 실패·연결 끊김이 발생해도 피해 범위가 막 1개로 한정.
-    _partial = project.get("treatment_partial", {})
-
-    def _run_treatment_act(act_n, spinner_label):
-        """v2.6.3: 해당 막 1개만 생성하고 완성 즉시 저장 후 화면 갱신."""
-        if not story:
-            st.error("Structure Build가 없습니다.")
-            return
-        with st.spinner(spinner_label):
-            result = call_treatment_beats(
-                core, story, scene_data, project["genre"], project["format"], act_n,
-                locked_block=_build_project_locked_block(project),
-                fact_based=project.get("fact_based", False),
-                historical=project.get("historical", False),
-                film_type=project.get("film_type", ""),
-                research=project.get("research"),
-            )
-        if result:
-            project.setdefault("treatment_partial", {})[f"act{act_n}"] = result
-            project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            st.rerun()
-
-    _act_specs = [
-        (1, "1막", "Beat 1~6", "약 1~3분"),
-        (2, "2막", "Beat 7~12", "약 1~3분"),
-        (3, "3막", "Beat 13~16", "약 1~2분"),
+    st.markdown("### 🚪 입구를 직접 선택")
+    st.caption("어느 입구에 들어갈지 명확하면 아래에서 직접 선택하세요.")
+
+    entries_meta = [
+        ("1", "결핍·상실", "LACK & LOSS", "💔",
+         "'~을 만들고 싶다'는 갈망에서 출발. BJND 진단으로 결핍/상실 본질 판별."),
+        ("2", "시대", "PERIOD", "🕰️",
+         "특정 시대(IMF·1990년대 등)에 끌릴 때. 시대 진단 + 디테일 펼침."),
+        ("3", "트렌드", "TREND", "📈",
+         "현재 시장 트렌드(회빙환·숏폼 등) 추종/변주/회피 결정."),
+        ("4", "What if", "HYPOTHESIS", "❓",
+         "'만약 ~라면?' 가설 확장 + 4대 함정 경고 + 톤 3분기."),
+        ("5", "사실", "FACT", "📜",
+         "구체적 역사·실화·뉴스 작품화. 5시점 발굴."),
     ]
-    _cols = st.columns(3)
-    for _col, (_n, _name, _beats_label, _tip) in zip(_cols, _act_specs):
-        with _col:
-            _done = bool(_partial.get(f"act{_n}"))
-            if _done:
-                st.caption(f"✅ {_name} 저장됨 · 비트 {len(_partial[f'act{_n}'].get('beats', []))}개")
-            _btn_label = f"🔄 {_name} 재생성" if _done else f"📝 {_name} 생성 ({_beats_label})"
-            if st.button(_btn_label, key=f"treat_act{_n}_btn"):
-                _run_treatment_act(_n, f"{_name} Treatment ({_beats_label})... ({_tip})")
 
-    # 저장된 막 미리보기 — 확정 전 검토용
-    for _n, _name, _beats_label, _tip in _act_specs:
-        _act_data = _partial.get(f"act{_n}")
-        if _act_data:
-            with st.expander(f"📖 {_name} 미리보기 (확정 전 · {_beats_label})"):
-                for _b in _act_data.get("beats", []):
-                    st.markdown(f"**Beat {_b.get('beat_no', '')}. {_b.get('beat_name', '')}** · {len(_b.get('narrative', ''))}자")
-                    st.write(_b.get("narrative", ""))
-
-    # ── v2.6.6: 확정 전 중간 저장 (Mr. MOON 운영 중 발견) ──
-    # v2.6.3 막별 독립 실행 개편 때 Treatment 페이지의 JSON 저장 버튼이
-    # 확정 이후 블록(if project.get("treatment"))에만 남아, 확정 전에는
-    # 저장 수단이 화면에 없었음. treatment_partial은 세션 메모리에만 있어
-    # 확정 전 세션 끊김 시 생성된 막이 유실 — v2.6.2~v2.6.3의 피해 범위
-    # 한정 취지와 어긋나는 공백. save_project_to_json은 project 전체를
-    # 직렬화하므로 treatment_partial도 포함 → 버튼만 노출하면 복원 작동.
-    if _partial and not project.get("treatment"):
-        with st.expander("💾 프로젝트 JSON 저장 (Treatment 진행중 · 확정 전)", expanded=False):
-            st.caption(
-                "생성된 막은 세션에만 저장되어 있습니다. 확정 전에 세션이 끊겨도 "
-                "여기서 JSON을 저장해 두면 해당 시점부터 이어서 진행할 수 있습니다."
-            )
-            _title_safe = project.get("title", "프로젝트").replace(" ", "_")
-            _ts = datetime.now().strftime("%Y%m%d_%H%M")
-            _partial_json_str = save_project_to_json(project)
-            st.download_button(
-                label="💾 프로젝트 저장 (Treatment 진행중)",
-                data=_partial_json_str.encode("utf-8"),
-                file_name=f"{_title_safe}_Treatment진행중_{_ts}.json",
-                mime="application/json",
-                use_container_width=True,
-                key="treat_partial_save_btn",
-            )
-
-    if all(_partial.get(f"act{_n}") for _n in (1, 2, 3)):
-        st.success("3개 막 완성 — 확정 실행 시 감정 곡선·Writer 인계 블록·Gate E 채점 후 Treatment가 확정됩니다.")
-        if st.button("✅ ④ Treatment 확정 (메타 + Gate E)", type="primary", key="treat_finalize_btn"):
-            act1 = _partial["act1"]
-            act2 = _partial["act2"]
-            act3 = _partial["act3"]
-            project["treatment"] = {"act1": act1, "act2": act2, "act3": act3}
-            project.pop("treatment_partial", None)  # v2.6.2: 확정 시 부분 저장분 정리
-            project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-            with st.spinner("④ 감정 곡선 + 감독 포인트... (약 10초)"):
-                meta = call_treatment_meta(act1, act2, act3, core)
-            if meta:
-                project["treatment"]["meta"] = meta
-
-            # v2.6.0 — Writer Engine v3.7.1 인계용 4블록 자동 생성
-            # (시퀀스 사이클 / 적대자 행위 / Setup-Payoff / 물리적 대가)
-            try:
-                handoff = build_writer_engine_handoff_v26(
-                    act1, act2, act3,
-                    char_bible=project.get("characters")
-                )
-                project["treatment"]["writer_handoff_v26"] = handoff
-                # 경고가 있으면 사용자에게 표시 (선택적)
-                all_warnings = []
-                all_warnings.extend(handoff.get("cycle_design", {}).get("warnings", []))
-                all_warnings.extend(handoff.get("antagonist_actions", {}).get("warnings", []))
-                all_warnings.extend(handoff.get("physical_cost_plan", {}).get("warnings", []))
-                # Setup-Payoff 미회수 항목 경고
-                sp_table = handoff.get("setup_payoff_table", [])
-                unrecovered = [x["item"] for x in sp_table if x.get("status") == "회수 필요"]
-                if unrecovered:
-                    all_warnings.append(
-                        f"Setup-Payoff 미회수 항목 {len(unrecovered)}개: {', '.join(unrecovered)} — "
-                        f"삭제 후보 또는 Payoff 추가 필요"
-                    )
-                if all_warnings:
-                    with st.expander(f"⚠️ v2.6.0 사전 방지 경고 {len(all_warnings)}건"):
-                        for w in all_warnings:
-                            st.warning(w)
-            except Exception as e:
-                st.warning(f"v2.6.0 후처리 중 비치명적 오류 (Treatment는 정상 저장됨): {e}")
-
-            with st.spinner("⑤ Gate E 채점... (약 15초, 장르·엔딩·논리 검증 포함)"):
-                gate_e = call_treatment_gate(
-                    project["treatment"],
-                    core_data=core,
-                    genre=project["genre"],
-                )
-            if gate_e:
-                project["treatment_gate"] = gate_e
-
-            project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            st.rerun()
-
-    # ── Treatment 결과 표시 (16비트 줄글) ──
-    if project.get("treatment"):
-        treat = project["treatment"]
-
-        act_labels = {1: "1막 — 설정 (Set-up)", 2: "2막 — 대결 (Confrontation)", 3: "3막 — 해결 (Resolution)"}
-
-        for act_num in [1, 2, 3]:
-            act_key = f"act{act_num}"
-            act_data = treat.get(act_key)
-            if act_data:
-                st.markdown(f"#### 📖 {act_labels[act_num]}")
-
-                for b in act_data.get("beats", []):
-                    beat_no = b.get("beat_no", "")
-                    beat_name = b.get("beat_name", "")
-                    episode = b.get("episode", "")
-                    narrative = b.get("narrative", "").replace("\n", "<br>")
-                    char_count = len(b.get("narrative", ""))
-                    event_s = b.get("event_summary", "")
-                    decision_s = b.get("decision_summary", "")
-                    consequence_s = b.get("consequence_summary", "")
-                    status_c = b.get("status_change", "")
-                    b_story = b.get("b_story_beat", "")
-                    cliff = b.get("cliffhanger", "")
-                    villain = b.get("villain_beat", "")
-                    pp = b.get("plant_payoff", "")
-
-                    ep_tag = f'<span style="background:var(--y);color:var(--n);padding:1px 6px;border-radius:3px;font-size:.7rem;margin-right:6px">{episode}</span>' if episode else ""
-
-                    meta_lines = []
-                    if event_s:
-                        meta_lines.append(f'<b>사건</b>: {event_s}')
-                    if decision_s:
-                        meta_lines.append(f'<b>선택</b>: {decision_s}')
-                    if consequence_s:
-                        meta_lines.append(f'<b>결과</b>: {consequence_s}')
-                    if status_c:
-                        meta_lines.append(f'<b>변화</b>: {status_c}')
-                    if b_story:
-                        meta_lines.append(f'<b>B-Story</b>: {b_story}')
-                    if villain:
-                        meta_lines.append(f'<b>빌런</b>: {villain}')
-                    if pp:
-                        meta_lines.append(f'<b>🌱 Plant/Payoff</b>: {pp}')
-                    if cliff:
-                        meta_lines.append(f'<b style="color:var(--r)">CLIFFHANGER</b>: {cliff}')
-                    meta_html = "<br>".join(meta_lines)
-                    meta_block = f'<div style="background:var(--mist);padding:8px 10px;border-radius:6px;margin-top:8px;font-size:.78rem;line-height:1.6">{meta_html}</div>' if meta_lines else ""
-
-                    st.markdown(
-                        f'<div class="card">'
-                        f'<div class="cl">{ep_tag}Beat {beat_no}. {beat_name}</div>'
-                        f'<div style="line-height:2.0;font-size:.9rem;margin-top:.5rem">'
-                        f'{narrative}'
-                        f'</div>'
-                        f'{meta_block}'
-                        f'<div style="text-align:right;font-size:.65rem;color:var(--dim);margin-top:.3rem">{char_count}자</div>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-                st.markdown("")
-
-        # 감정 곡선
-        meta = treat.get("meta", {})
-        ec = meta.get("emotion_curve", [])
-        if ec:
-            st.markdown("#### 📈 감정 곡선")
-            import plotly.graph_objects as go
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=[p.get("point","") for p in ec],
-                y=[p.get("tension",0) for p in ec],
-                mode='lines+markers',
-                line=dict(color='#191970', width=3),
-                marker=dict(size=8, color='#FFCB05', line=dict(color='#191970', width=2)),
-                text=[p.get("emotion","") for p in ec],
-                hovertemplate='%{x}<br>텐션: %{y}<br>감정: %{text}<extra></extra>'
-            ))
-            fig.update_layout(
-                plot_bgcolor='#FAFAFA', paper_bgcolor='#FAFAFA',
-                font_color='#1A1A2E', yaxis_range=[0,10],
-                yaxis_title="Tension", height=300,
-                margin=dict(l=40,r=20,t=20,b=40),
-                yaxis=dict(gridcolor='#E0E0E8'),
-                xaxis=dict(gridcolor='#E0E0E8')
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        # 감독용 포인트
-        notes = meta.get("director_notes", [])
-        if notes:
-            st.markdown("#### 🎬 감독용 포인트")
-            for i, n in enumerate(notes, 1):
-                st.markdown(f"**{i}.** {n}")
-
-        # 투자자 요약
-        inv = meta.get("investor_summary", "")
-        if inv:
-            st.markdown(f'<div class="callout"><div class="cl">💰 투자자용 요약</div>{inv}</div>', unsafe_allow_html=True)
-
-        st.markdown("---")
-
-        # Gate E
-        if project.get("treatment_gate"):
-            tg = project["treatment_gate"]
-            ge = tg.get("gate_e_treatment", {})
-            ge_avg = ge.get("average", 0)
-            ge_ok = ge_avg >= 7.0
-
-            st.markdown("#### 🚪 Gate E: Treatment Gate")
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                cl = "var(--g)" if ge_ok else "var(--r)"
-                st.markdown(f'<div style="text-align:center"><div class="big" style="color:{cl}">{ge_avg}</div><div class="sm" style="color:{cl};font-size:1rem;font-weight:700">{"PASS" if ge_ok else "FAIL"}</div></div>', unsafe_allow_html=True)
-            with c2:
-                for nm, sc in [("영화적 읽힘",ge.get("cinematic_reading",0)),("씬-감정 일치",ge.get("scene_emotion_match",0)),("비트 충실도",ge.get("beat_completeness",0)),("초고 직행 가능",ge.get("screenplay_ready",0))]:
-                    st.markdown(f'<div style="display:flex;align-items:center;margin:.2rem 0;font-size:.8rem"><div style="width:100px;color:var(--dim)">{nm}</div><div style="flex:1;background:#E0E0E8;border-radius:4px;height:8px;margin:0 .5rem"><div style="width:{sc*10}%;background:var(--y);height:100%;border-radius:4px"></div></div><div style="width:30px;text-align:right">{sc}</div></div>', unsafe_allow_html=True)
-            if ge.get("feedback"):
-                st.caption(ge["feedback"])
-
-            if ge_ok:
-                st.success("✅ Gate E 통과. 기획개발 완료. Screenplay Writer Engine 연동 준비 완료.")
-            else:
-                st.warning(f"⚠️ Gate E 미통과 (평균 {ge_avg}). Treatment 보강 필요.")
-                if st.button("🔄 Treatment 재실행"):
-                    project["treatment"] = None
-                    project["treatment_gate"] = None
-                    st.rerun()
-
-        # DOCX 2차(최종) 다운로드
-        st.markdown("---")
-        st.markdown("#### 📥 기획개발보고서 [최종] 다운로드")
-        st.caption("Core + Structure + Scene Design + Treatment 전체가 포함된 최종 기획서입니다.")
-        title_safe = project.get("title", "프로젝트").replace(" ", "_")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        docx_buffer = generate_docx(project)
-        st.download_button(
-            label="📥 기획개발보고서 [최종] 다운로드 (.docx)",
-            data=docx_buffer,
-            file_name=f"기획개발보고서_{title_safe}_최종_Blue_{timestamp}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True
-        )
-
-        # JSON 프로젝트 저장 (세션 복구용)
-        st.markdown("#### 💾 프로젝트 JSON 저장 (세션 복구용)")
-        project_json_str = save_project_to_json(project)
-        st.download_button(
-            label="💾 프로젝트 저장 (Treatment 완료 시점)",
-            data=project_json_str.encode("utf-8"),
-            file_name=f"{title_safe}_Treatment완료_{timestamp}.json",
-            mime="application/json",
-            use_container_width=True,
-        )
-
-        # Tone Document 진행
-        st.markdown("---")
-        st.success("✅ Treatment 완료. Tone Document 진행 가능.")
-        if st.button("🎨 Tone Document 진행 →", type="primary", use_container_width=True):
-            st.session_state.view = "tone_doc"
-            st.rerun()
-
-    else:
-        st.markdown(
-            '<div style="text-align:center;padding:3rem 0;color:var(--dim)">'
-            '📝 Treatment Build를 실행하면 여기에 결과가 표시됩니다.'
-            '</div>',
-            unsafe_allow_html=True
-        )
-
-    st.markdown("---")
-    st.caption(ENGINE_FOOTER)
-
-
-# ═══════════════════════════════════════════════════
-#  TONE DOCUMENT
-# ═══════════════════════════════════════════════════
-elif st.session_state.view == "tone_doc" and st.session_state.cur:
-
-    project = st.session_state.projects[st.session_state.cur]
-    core = project.get("core", {})
-    treatment = project.get("treatment", {})
-
-    st.markdown(f"## {project['title']}")
-    st.caption(f"{project['genre']} · {project['target_market']} · {project['format']}")
-    render_stepper("tone_doc", project)
-
-    lp = core.get("logline_pack", {})
-    if lp.get("washed"):
-        st.markdown(f'<div class="callout"><div class="cl">Logline</div>{lp["washed"]}</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown('<div class="section-header">🎨 Tone Document <span class="en">VISUAL & TONAL GUIDE</span></div>', unsafe_allow_html=True)
-    st.caption("카메라 · 색감 · 페이싱 · 대사 규칙 · 모티프 · 금기 — Writer Engine의 톤 일관성 가이드")
-
-    if not project.get("tone_doc"):
-        if st.button("🎨 Tone Document 생성", type="primary"):
-            with st.spinner("톤 & 연출 문서 설계 중... (최대 40초)"):
-                result = call_tone_document(
-                    core, project.get("structure_story", {}),
-                    project.get("scene_design", {}), treatment,
-                    project.get("char_bible", {}),
-                    project["genre"], project["format"],
-                    locked_block=_build_project_locked_block(project),
-                    fact_based=project.get("fact_based", False),
-                    historical=project.get("historical", False),
-                    film_type=project.get("film_type", ""),
-                )
-            if result:
-                project["tone_doc"] = result
-                project["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cols = st.columns(5)
+    for i, (eid, kr, en, emoji, desc) in enumerate(entries_meta):
+        with cols[i]:
+            st.markdown(f"""
+            <div style="border:1.5px solid #E2E2E0;border-radius:12px;padding:14px 12px;background:#fff;min-height:200px;">
+                <div style="font-size:1.8rem;text-align:center;margin-bottom:6px;">{emoji}</div>
+                <div style="font-family:'Playfair Display',serif;font-size:.9rem;font-weight:700;color:#191970;text-align:center;margin-bottom:4px;">입구 {eid}</div>
+                <div style="font-size:1rem;font-weight:700;color:#1A1A2E;text-align:center;margin-bottom:6px;">{kr}</div>
+                <div style="font-size:.65rem;color:#999;text-align:center;letter-spacing:.05em;margin-bottom:10px;">{en}</div>
+                <div style="font-size:.72rem;color:#555;line-height:1.4;">{desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            if st.button(f"입구 {eid} 진입", key=f"direct_entry_{eid}", use_container_width=True):
+                st.session_state["hunter_entry"] = eid
                 st.rerun()
 
-    td = project.get("tone_doc", {})
-    if td:
-        # Visual Style
-        vs = td.get("visual_style", {})
-        if vs:
-            st.markdown('<div class="section-header">🎥 비주얼 스타일 <span class="en">VISUAL STYLE</span></div>', unsafe_allow_html=True)
-            for label, key in [("카메라 철학","camera_philosophy"),("색감 팔레트","color_palette"),("조명 규칙","lighting_rule"),("시그니처 쇼트","signature_shot")]:
-                val = vs.get(key, "")
-                if val:
-                    st.markdown(f'<div class="ri"><div class="rl">{label}</div>{val}</div>', unsafe_allow_html=True)
+    # ── 개발자 디버그 ──
+    with st.expander("개발자: 현재 HUNTER 상태", expanded=False):
+        st.json({
+            "mode": st.session_state.get("mode"),
+            "hunter_entry": st.session_state.get("hunter_entry"),
+            "hunter_input": st.session_state.get("hunter_input"),
+            "hunter_classified": st.session_state.get("hunter_classified"),
+            "hunter_stage_data_keys": list((st.session_state.get("hunter_stage_data") or {}).keys()),
+            "hunter_output": st.session_state.get("hunter_output"),
+        })
 
-        # Pacing
-        pc = td.get("pacing", {})
-        if pc:
-            st.markdown('<div class="section-header">⏱️ 페이싱 <span class="en">PACING</span></div>', unsafe_allow_html=True)
-            for label, key in [("전체 철학","overall"),("1막 템포","act1_tempo"),("2막 템포","act2_tempo"),("3막 템포","act3_tempo"),("대사 비율","dialogue_density")]:
-                val = pc.get(key, "")
-                if val:
-                    st.markdown(f'<div class="ri"><div class="rl">{label}</div>{val}</div>', unsafe_allow_html=True)
 
-        # Dialogue Rules
-        dr = td.get("dialogue_rules", {})
-        if dr:
-            st.markdown('<div class="section-header">💬 대사 규칙 <span class="en">DIALOGUE RULES</span></div>', unsafe_allow_html=True)
-            for label, key in [("전체 톤","overall_tone"),("서브텍스트","subtext_rule"),("침묵 활용","silence_usage")]:
-                val = dr.get(key, "")
-                if val:
-                    st.markdown(f'<div class="ri"><div class="rl">{label}</div>{val}</div>', unsafe_allow_html=True)
-            forbidden = dr.get("forbidden_phrases", [])
-            if forbidden:
-                fp_list = forbidden if isinstance(forbidden, list) else [forbidden]
-                fp_html = "<br>".join([f"🚫 {f}" for f in fp_list])
-                st.markdown(f'<div class="card"><div class="cl">금지 대사 패턴</div>{fp_html}</div>', unsafe_allow_html=True)
+def _hunter_render_questions(questions, key_prefix, intro_text=None):
+    """공통 질문 렌더링 헬퍼. 5개 질문 + 보조 옵션 + 답변 입력."""
+    if intro_text:
+        st.markdown(f'<div class="callout">{intro_text}</div>', unsafe_allow_html=True)
 
-        # Motifs
-        mt = td.get("motifs", {})
-        if mt:
-            st.markdown('<div class="section-header">🔄 모티프 <span class="en">RECURRING MOTIFS</span></div>', unsafe_allow_html=True)
-            for label, key in [("반복 소품/모티프","recurring_objects"),("반복 장소","recurring_locations")]:
-                val = mt.get(key, [])
-                if val:
-                    items = val if isinstance(val, list) else [val]
-                    items_html = "<br>".join([f"• {i}" for i in items])
-                    st.markdown(f'<div class="card"><div class="cl">{label}</div>{items_html}</div>', unsafe_allow_html=True)
-            wm = mt.get("weather_mood", "")
-            if wm:
-                st.markdown(f'<div class="ri"><div class="rl">날씨/계절</div>{wm}</div>', unsafe_allow_html=True)
+    answers = {}
+    for q in questions:
+        qid = q.get("q_id", 0)
+        st.markdown(f"**Q{qid}. {q.get('question', '')}**")
+        principle = q.get("principle", "")
+        if principle:
+            st.caption(f"원칙: {principle}")
 
-        # Music & Sound
-        ms = td.get("music_sound", {})
-        if ms:
-            st.markdown('<div class="section-header">🎵 사운드 <span class="en">MUSIC & SOUND</span></div>', unsafe_allow_html=True)
-            for label, key in [("음악 방향","score_direction"),("무음 활용","silence_scenes")]:
-                val = ms.get(key, "")
-                if val:
-                    st.markdown(f'<div class="ri"><div class="rl">{label}</div>{val}</div>', unsafe_allow_html=True)
-            ds = ms.get("diegetic_sounds", [])
-            if ds:
-                items = ds if isinstance(ds, list) else [ds]
-                items_html = " · ".join(items)
-                st.markdown(f'<div class="ri"><div class="rl">작품 내 소리</div>{items_html}</div>', unsafe_allow_html=True)
+        hints = q.get("hint_options", []) or []
+        if hints:
+            st.caption("보조 옵션: " + " · ".join(hints))
 
-        # Forbidden
-        forbidden = td.get("forbidden", [])
-        if forbidden:
-            st.markdown('<div class="section-header">🚫 금기 <span class="en">FORBIDDEN</span></div>', unsafe_allow_html=True)
-            fb_list = forbidden if isinstance(forbidden, list) else [forbidden]
-            fb_html = "<br>".join([f"🚫 {f}" for f in fb_list])
-            st.markdown(f'<div class="card">{fb_html}</div>', unsafe_allow_html=True)
-
-        # Reference Films
-        refs = td.get("reference_films", [])
-        if refs:
-            st.markdown('<div class="section-header">🎬 참고 작품 <span class="en">REFERENCE FILMS</span></div>', unsafe_allow_html=True)
-            for ref in refs:
-                title_ref = ref.get("title", "") if isinstance(ref, dict) else str(ref)
-                reason = ref.get("reason", "") if isinstance(ref, dict) else ""
-                st.markdown(f'<div class="ri"><div class="rl">{title_ref}</div>{reason}</div>', unsafe_allow_html=True)
-
-        # Writer Instruction
-        wi = td.get("writer_instruction", "")
-        if wi:
-            st.markdown(f'<div class="callout" style="border-left-color:var(--y)"><div class="cl">✍️ Writer Engine 최종 지시</div>{wi}</div>', unsafe_allow_html=True)
-
-        # 완료
-        st.markdown("---")
-        st.success("🎉 기획개발 완료! 전체 9단계 파이프라인이 완성되었습니다.")
-        st.info("→ Writer Engine에서 이 기획서를 불러와 시나리오를 생성할 수 있습니다.")
-
-        # 최종 DOCX 다운로드
-        title_safe = project.get("title", "프로젝트").replace(" ", "_")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        docx_buffer = generate_docx(project)
-        st.download_button(
-            label="📥 기획개발보고서 [최종 + Tone] 다운로드 (.docx)",
-            data=docx_buffer,
-            file_name=f"기획개발보고서_{title_safe}_최종_Blue_{timestamp}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True
+        answer = st.text_area(
+            f"답변 {qid}",
+            key=f"{key_prefix}_q{qid}",
+            height=80,
+            label_visibility="collapsed",
+            placeholder="자유롭게 작성하시거나, 보조 옵션 중 하나를 선택해서 살을 붙이세요.",
         )
+        answers[f"q{qid}"] = answer
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-        # 최종 프로젝트 JSON 저장 (완성 상태 백업)
-        st.markdown("#### 💾 프로젝트 JSON 저장 (완성 상태 백업)")
-        st.caption("완성된 프로젝트 전체 상태. 나중에 Writer Engine 투입 전 참고용 또는 백업용.")
-        project_json_str = save_project_to_json(project)
-        st.download_button(
-            label="💾 프로젝트 저장 (최종 완성)",
-            data=project_json_str.encode("utf-8"),
-            file_name=f"{title_safe}_최종완성_{timestamp}.json",
-            mime="application/json",
-            use_container_width=True,
-        )
+    return answers
 
+
+def _hunter_render_seed_cards(seeds, bjnd_essence=None, period_essence=None):
+    """시드 후보 카드 렌더링 + 선택 버튼."""
+    selected_seed = None
+
+    for s in seeds:
+        sid = s.get("seed_id", "")
+        slabel = s.get("seed_label", "")
+        title = s.get("title", "")
+        genre = s.get("genre", "")
+        target = s.get("target_market", "")
+        fmt = s.get("format", "")
+        raw_idea = s.get("raw_idea", "")
+        diff = s.get("differentiation", "")
+        bjnd_label = s.get("bjnd_label", "") or s.get("period_bjnd_label", "")
+
+        with st.container():
+            st.markdown(f"""
+            <div style="border:2px solid #FFCB05;border-radius:14px;padding:18px;background:#FFFEF5;margin-bottom:14px;">
+                <div style="display:inline-block;background:#191970;color:#FFCB05;font-size:.7rem;font-weight:700;padding:3px 10px;border-radius:999px;">시드 {sid} · {slabel}</div>
+                <div style="font-family:'Playfair Display',serif;font-size:1.3rem;font-weight:700;color:#191970;margin-top:8px;">{title}</div>
+                <div style="font-size:.85rem;color:#666;margin-top:4px;">
+                    <b>장르</b>: {genre} · <b>포맷</b>: {fmt}<br>
+                    <b>타겟</b>: {target}
+                </div>
+                {f'<div style="font-size:.75rem;color:#191970;font-weight:600;margin-top:6px;">{bjnd_label}</div>' if bjnd_label else ''}
+                <div style="margin-top:10px;padding:10px;background:white;border-radius:8px;font-size:.88rem;line-height:1.6;color:#1A1A2E;">{raw_idea}</div>
+                <div style="font-size:.78rem;color:#555;margin-top:8px;font-style:italic;">{diff}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button(f"→ 시드 {sid} 선택해서 TRIAGE로 전송", key=f"select_seed_{sid}", use_container_width=True, type="primary"):
+                # HUNTER 시드 → TRIAGE 인계 형식으로 변환
+                st.session_state["hunter_output"] = {
+                    "title": title,
+                    "genre": genre,
+                    "target_market": target,
+                    "format_pref": fmt,
+                    "raw_idea": raw_idea,
+                    "hunter_meta": {
+                        "entry": st.session_state.get("hunter_entry", ""),
+                        "seed_id": sid,
+                        "seed_label": slabel,
+                        "bjnd_label": bjnd_label,
+                        "bjnd_essence": bjnd_essence,
+                        "period_essence": period_essence,
+                        "differentiation": diff,
+                    },
+                }
+                transfer_hunter_seed_to_triage()
+                st.session_state["mode"] = "TRIAGE"
+                st.rerun()
+
+
+def _hunter_back_button(entry_id):
+    """입구 선택으로 돌아가기 버튼."""
+    col_back, _ = st.columns([1, 4])
+    with col_back:
+        if st.button("← 입구 선택으로", key=f"hunter_back_{entry_id}", use_container_width=True):
+            st.session_state["hunter_entry"] = None
+            # 진행 중 데이터는 보존 (작가가 다시 들어올 수 있도록)
+            st.rerun()
+
+
+def _hunter_reset_button(entry_id):
+    """현재 입구 진행 데이터 초기화 버튼."""
+    if st.button("🔄 이 입구 처음부터 다시", key=f"hunter_reset_{entry_id}", use_container_width=True):
+        # 현재 입구 진행 데이터만 삭제
+        stage_data = st.session_state.get("hunter_stage_data", {})
+        for k in list(stage_data.keys()):
+            if k.startswith(f"entry{entry_id}_"):
+                del stage_data[k]
+        st.session_state["hunter_stage_data"] = stage_data
+        st.rerun()
+
+
+def page_hunter_entry(entry_id: str):
+    """입구별 페이지 — 입구 1~5 본 구현."""
+    entry_titles = {
+        "1": ("결핍·상실", "LACK & LOSS"),
+        "2": ("시대", "PERIOD"),
+        "3": ("트렌드", "TREND"),
+        "4": ("What if", "HYPOTHESIS"),
+        "5": ("사실", "FACT"),
+    }
+    kr, en = entry_titles.get(entry_id, ("입구", "ENTRY"))
+    section_header(f"🎯 HUNTER · 입구 {entry_id} — {kr}", en)
+
+    # 입구별 라우팅
+    if entry_id == "1":
+        _hunter_entry_1_lack_loss()
+    elif entry_id == "2":
+        _hunter_entry_2_period()
+    elif entry_id == "3":
+        _hunter_entry_3_trend()
+    elif entry_id == "4":
+        _hunter_entry_4_whatif()
+    elif entry_id == "5":
+        _hunter_entry_5_fact()
     else:
-        st.markdown(
-            '<div style="text-align:center;padding:3rem 0;color:var(--dim)">'
-            '🎨 Tone Document를 생성하면 여기에 결과가 표시됩니다.<br>'
-            '카메라 · 색감 · 페이싱 · 대사 규칙 · 모티프 · 참고 작품'
-            '</div>',
-            unsafe_allow_html=True
+        st.warning(f"알 수 없는 입구: {entry_id}")
+        _hunter_back_button(entry_id)
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 1 — 결핍·상실 (3턴: 진단 → 정밀 확장 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_1_lack_loss():
+    small_meta(
+        "BJND 진단(결핍 vs 상실) → 정밀 사고 확장 → 시드 후보 3개의 3턴 구조입니다. "
+        "같은 표면 갈망도 결핍/상실 발생 근원에 따라 완전히 다른 작품이 됩니다."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # ── 턴 1: 입력 받기 ──
+    desire_input = stage_data.get("entry1_desire_input", "")
+    if not desire_input:
+        # 입구 0에서 자동 분류된 입력이 있으면 가져오기
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 1:
+            desire_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 작품을 향한 갈망을 입력하세요")
+        with st.form("entry1_desire_form"):
+            desire = st.text_area(
+                "어떤 작품을 만들고 싶으신가요?",
+                value=desire_input,
+                height=100,
+                placeholder="예: 로맨스 만들고 싶다 / 복수극이 끌려 / 감동적인 가족 드라마 / 미스터리 스릴러",
+            )
+            submitted = st.form_submit_button("→ BJND 진단 시작", type="primary", use_container_width=True)
+
+        if submitted and desire.strip():
+            stage_data["entry1_desire_input"] = desire.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+
+        _hunter_back_button("1")
+        return
+
+    # 입력 표시
+    st.markdown(f"**작가의 갈망:** _{desire_input}_")
+    st.markdown("---")
+
+    # ── 턴 2: BJND 진단 질문 ──
+    diagnosis = stage_data.get("entry1_diagnosis")
+    if not diagnosis:
+        st.markdown("### 2단계 — BJND 진단 질문 5개")
+        if st.button("📊 BJND 진단 질문 생성 (Sonnet 4.6)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 BJND 진단 질문 5개 생성 중... (20~40초)"):
+                prompt_text = P.HUNTER_ENTRY_1_DIAGNOSIS_PROMPT.format(desire_input=desire_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry1_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # 진단 질문 표시 + 답변 입력
+    diagnosis_answers = stage_data.get("entry1_diagnosis_answers")
+    if not diagnosis_answers:
+        st.markdown("### 2단계 — BJND 진단 5개 질문에 답해주세요")
+        echo = diagnosis.get("echo_back", "")
+        if echo:
+            st.markdown(f'<div class="callout"><b>입력 재진술:</b> {echo}</div>', unsafe_allow_html=True)
+
+        intro = diagnosis.get("diagnosis_intro", "")
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e1_diag",
+            intro_text=intro,
         )
+
+        if st.button("→ 진단 결과 + 정밀 사고 확장", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry1_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # ── 턴 3: BJND 판정 + 정밀 확장 질문 ──
+    expansion = stage_data.get("entry1_expansion")
+    if not expansion:
+        st.markdown("### 3단계 — BJND 판정 + 정밀 사고 확장 (Sonnet 4.6)")
+        if st.button("🔬 BJND 판정 + 정밀 확장 실행", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 결핍/상실 판정 + 정밀 질문 생성 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_1_EXPANSION_PROMPT.format(
+                    desire_input=desire_input,
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry1_expansion"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # 판정 결과 표시
+    diag_result = expansion.get("diagnosis_result", {})
+    bjnd_type = diag_result.get("type", "")
+    lack_score = diag_result.get("lack_score", 0)
+    loss_score = diag_result.get("loss_score", 0)
+
+    st.markdown("### 📊 BJND 판정 결과")
+    col_t, col_l, col_lo = st.columns(3)
+    with col_t:
+        st.metric("판정 유형", bjnd_type)
+    with col_l:
+        st.metric("결핍 점수", f"{lack_score}/5")
+    with col_lo:
+        st.metric("상실 점수", f"{loss_score}/5")
+
+    st.markdown(f'<div class="callout">{diag_result.get("reasoning", "")}</div>', unsafe_allow_html=True)
+
+    refs = diag_result.get("reference_works", [])
+    if refs:
+        st.markdown("**참고작 (같은 결의 작품):**")
+        for r in refs:
+            st.markdown(f"- {r}")
 
     st.markdown("---")
-    st.caption(ENGINE_FOOTER)
+
+    # 정밀 확장 질문 답변
+    expansion_answers = stage_data.get("entry1_expansion_answers")
+    if not expansion_answers:
+        st.markdown("### 4단계 — 정밀 사고 확장 5개 질문에 답해주세요")
+        intro = expansion.get("expansion_intro", "")
+        answers = _hunter_render_questions(
+            expansion.get("expansion_questions", []),
+            "e1_exp",
+            intro_text=intro,
+        )
+
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry1_expansion_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # ── 턴 4: 시드 빌드 ──
+    seeds_result = stage_data.get("entry1_seeds")
+    if not seeds_result:
+        st.markdown("### 5단계 — 시드 후보 3개 빌드 (Opus 4.7)")
+        if st.button("🌱 시드 후보 3개 생성", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 시드 후보 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_1_SEEDS_PROMPT.format(
+                    desire_input=desire_input,
+                    diagnosis_result=json.dumps(diag_result, ensure_ascii=False, indent=2),
+                    expansion_answers=json.dumps(expansion_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry1_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("1")
+        with col_reset:
+            _hunter_reset_button("1")
+        return
+
+    # 시드 후보 표시 + 선택
+    st.markdown("### 🌱 시드 후보 3개")
+    synthesis = seeds_result.get("synthesis", "")
+    if synthesis:
+        st.markdown(f'<div class="callout"><b>본질 종합:</b> {synthesis}</div>', unsafe_allow_html=True)
+
+    bjnd_essence = seeds_result.get("bjnd_essence", {})
+    if bjnd_essence:
+        with st.expander("BJND 본질 상세"):
+            st.json(bjnd_essence)
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []), bjnd_essence=bjnd_essence)
+
+    recommendation = seeds_result.get("recommendation", "")
+    if recommendation:
+        st.markdown(f"**추천:** {recommendation}")
+
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("1")
+    with col_reset:
+        _hunter_reset_button("1")
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 2 — 시대 (3턴: 시대 진단 → 디테일 펼침 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_2_period():
+    small_meta(
+        "시대 진단(결핍형/상실형) → 시대 디테일 펼침 → 시드 후보 3개의 3턴 구조입니다. "
+        "그 시대에 대한 작가의 관계가 결핍(못 가본 시대 동경)인지 상실(잃어버린 시대 회한)인지 진단합니다."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # 턴 1: 입력
+    period_input = stage_data.get("entry2_period_input", "")
+    if not period_input:
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 2:
+            period_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 어떤 시대를 작품 배경으로 하고 싶으신가요?")
+        with st.form("entry2_period_form"):
+            period = st.text_area(
+                "시대 입력",
+                value=period_input,
+                height=80,
+                placeholder="예: IMF 때 이야기 / 1990년대 한국 / 조선 후기 / 2002년 월드컵 / 식민지 시대",
+            )
+            submitted = st.form_submit_button("→ 시대 진단 시작", type="primary", use_container_width=True)
+        if submitted and period.strip():
+            stage_data["entry2_period_input"] = period.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+        _hunter_back_button("2")
+        return
+
+    st.markdown(f"**작가의 시대:** _{period_input}_")
+    st.markdown("---")
+
+    # 턴 2: 시대 진단 질문
+    diagnosis = stage_data.get("entry2_diagnosis")
+    if not diagnosis:
+        if st.button("📊 시대 진단 질문 생성", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 시대 진단 질문 생성 중... (20~40초)"):
+                prompt_text = P.HUNTER_ENTRY_2_DIAGNOSIS_PROMPT.format(period_input=period_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry2_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 진단 질문 답변
+    diagnosis_answers = stage_data.get("entry2_diagnosis_answers")
+    if not diagnosis_answers:
+        echo = diagnosis.get("echo_back", "")
+        if echo:
+            st.markdown(f'<div class="callout"><b>입력 재진술:</b> {echo}</div>', unsafe_allow_html=True)
+        intro = diagnosis.get("diagnosis_intro", "")
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e2_diag",
+            intro_text=intro,
+        )
+        if st.button("→ 시대 판정 + 디테일 펼침", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry2_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 턴 3: 시대 판정 + 디테일 펼침
+    expansion = stage_data.get("entry2_expansion")
+    if not expansion:
+        if st.button("🔬 시대 판정 + 디테일 펼침", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 시대 판정 + 디테일 펼침 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_2_EXPANSION_PROMPT.format(
+                    period_input=period_input,
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry2_expansion"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 시대 판정 표시
+    diag_result = expansion.get("diagnosis_result", {})
+    st.markdown("### 🕰️ 시대 판정")
+    st.markdown(f"**유형:** {diag_result.get('type', '')}")
+    st.markdown(f"**시대 명명:** {diag_result.get('period_label', '')}")
+    st.markdown(f'<div class="callout">{diag_result.get("reasoning", "")}</div>', unsafe_allow_html=True)
+
+    canvas = expansion.get("period_detail_canvas", {})
+    if canvas:
+        with st.expander("📜 시대 디테일 캔버스", expanded=True):
+            st.markdown(f"**감각적 정수:** {canvas.get('sensory_essence', '')}")
+            st.markdown(f"**사회 풍경:** {canvas.get('social_landscape', '')}")
+            st.markdown(f"**결핍/상실 풍경:** {canvas.get('lack_or_loss_landscape', '')}")
+            add = canvas.get("additional_details", [])
+            if add:
+                st.markdown("**추가 디테일:**")
+                for d in add:
+                    st.markdown(f"- {d}")
+
+    st.markdown("---")
+
+    # 정밀 확장 답변
+    expansion_answers = stage_data.get("entry2_expansion_answers")
+    if not expansion_answers:
+        intro = expansion.get("expansion_intro", "")
+        answers = _hunter_render_questions(
+            expansion.get("expansion_questions", []),
+            "e2_exp",
+            intro_text=intro,
+        )
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry2_expansion_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 턴 4: 시드 빌드
+    seeds_result = stage_data.get("entry2_seeds")
+    if not seeds_result:
+        if st.button("🌱 시드 후보 3개 생성 (Opus 4.7)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 시대 시드 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_2_SEEDS_PROMPT.format(
+                    period_input=period_input,
+                    diagnosis_result=json.dumps(diag_result, ensure_ascii=False, indent=2),
+                    expansion_answers=json.dumps(expansion_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry2_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("2")
+        with col_reset:
+            _hunter_reset_button("2")
+        return
+
+    # 시드 표시
+    st.markdown("### 🌱 시대 시드 후보 3개")
+    synthesis = seeds_result.get("synthesis", "")
+    if synthesis:
+        st.markdown(f'<div class="callout"><b>본질 종합:</b> {synthesis}</div>', unsafe_allow_html=True)
+
+    period_essence = seeds_result.get("period_essence", {})
+    if period_essence:
+        with st.expander("시대 본질 상세"):
+            st.json(period_essence)
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []), period_essence=period_essence)
+
+    if seeds_result.get("recommendation"):
+        st.markdown(f"**추천:** {seeds_result['recommendation']}")
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("2")
+    with col_reset:
+        _hunter_reset_button("2")
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 3 — 트렌드 (2턴: 분석+3길 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_3_trend():
+    small_meta(
+        "트렌드 분석 + 추종/변주/회피 3길 → 시드 후보 3개의 2턴 구조입니다. "
+        "BJND는 적용하지 않습니다 (장르·포맷 결정 입구이지 인물 욕망 입구가 아니므로)."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # 턴 1: 입력
+    trend_input = stage_data.get("entry3_trend_input", "")
+    if not trend_input:
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 3:
+            trend_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 어떤 트렌드에 대해 입장을 정리하고 싶으신가요?")
+        with st.form("entry3_trend_form"):
+            trend = st.text_area(
+                "트렌드 입력",
+                value=trend_input,
+                height=80,
+                placeholder="예: 회빙환 해야 하나 / 숏폼 드라마가 대세 / SF가 뜨고 있다 / 사극 부활 / 로맨스 판타지",
+            )
+            submitted = st.form_submit_button("→ 트렌드 분석 시작", type="primary", use_container_width=True)
+        if submitted and trend.strip():
+            stage_data["entry3_trend_input"] = trend.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+        _hunter_back_button("3")
+        return
+
+    st.markdown(f"**작가의 트렌드:** _{trend_input}_")
+    st.markdown("---")
+
+    # 턴 2: 트렌드 분석 + 3길 + 진단 질문
+    diagnosis = stage_data.get("entry3_diagnosis")
+    if not diagnosis:
+        if st.button("📈 트렌드 분석 + 3길 펼침", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 트렌드 분석 + 3길 + 진단 질문 생성 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_3_DIAGNOSIS_PROMPT.format(trend_input=trend_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry3_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("3")
+        with col_reset:
+            _hunter_reset_button("3")
+        return
+
+    # 트렌드 분석 표시
+    analysis = diagnosis.get("trend_analysis", {})
+    st.markdown("### 📈 트렌드 분석")
+    st.markdown(f"**본질:** {analysis.get('trend_essence', '')}")
+    st.markdown(f"**시장 위치:** {analysis.get('market_position', '')}")
+    st.caption(analysis.get("market_reasoning", ""))
+
+    st.markdown("---")
+    st.markdown("### 🛤️ 추종 / 변주 / 회피 3길")
+    paths = diagnosis.get("three_paths", {})
+    col_f, col_v, col_a = st.columns(3)
+    for col, key, label in [(col_f, "follow", "추종"), (col_v, "variation", "변주"), (col_a, "avoidance", "회피")]:
+        p = paths.get(key, {})
+        with col:
+            st.markdown(f"**{label}**")
+            st.caption(p.get("definition", ""))
+            st.markdown(f"<span style='color:#2E7D32;font-size:.8rem;'>장점: {p.get('advantage', '')}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:#C62828;font-size:.8rem;'>위험: {p.get('risk', '')}</span>", unsafe_allow_html=True)
+            examples = p.get("examples", [])
+            if examples:
+                st.caption("예: " + " / ".join(examples))
+
+    st.markdown("---")
+
+    # 진단 답변
+    diagnosis_answers = stage_data.get("entry3_diagnosis_answers")
+    if not diagnosis_answers:
+        intro = "트렌드 분석을 보셨으니 이제 작가 본인의 결을 진단합니다."
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e3_diag",
+            intro_text=intro,
+        )
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry3_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("3")
+        with col_reset:
+            _hunter_reset_button("3")
+        return
+
+    # 시드 빌드
+    seeds_result = stage_data.get("entry3_seeds")
+    if not seeds_result:
+        if st.button("🌱 시드 후보 3개 생성 (Opus 4.7)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 트렌드 노선 시드 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_3_SEEDS_PROMPT.format(
+                    trend_input=trend_input,
+                    trend_analysis=json.dumps(analysis, ensure_ascii=False, indent=2),
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry3_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("3")
+        with col_reset:
+            _hunter_reset_button("3")
+        return
+
+    # 시드 표시
+    selected_path = seeds_result.get("selected_path", "")
+    st.markdown(f"### 🌱 시드 후보 3개 — 선택 노선: **{selected_path}**")
+    if seeds_result.get("path_reasoning"):
+        st.markdown(f'<div class="callout">{seeds_result["path_reasoning"]}</div>', unsafe_allow_html=True)
+    if seeds_result.get("synthesis"):
+        st.markdown(f"**본질 종합:** {seeds_result['synthesis']}")
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []))
+
+    if seeds_result.get("market_warning"):
+        st.warning(f"⚠ **시장 위험 안내:** {seeds_result['market_warning']}")
+    if seeds_result.get("recommendation"):
+        st.markdown(f"**추천:** {seeds_result['recommendation']}")
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("3")
+    with col_reset:
+        _hunter_reset_button("3")
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 4 — What if (2턴: 가설 분석+4함정+톤3분기 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_4_whatif():
+    small_meta(
+        "가설 분석 + 4대 함정 경고 + 톤 3분기 → 시드 후보 3개의 2턴 구조입니다. "
+        "가설의 매력이 결핍/상실/세계 변형 어느 쪽 충족 판타지인지 BJND 보조 진단합니다."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # 턴 1: 입력
+    whatif_input = stage_data.get("entry4_whatif_input", "")
+    if not whatif_input:
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 4:
+            whatif_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 어떤 'What if' 가설이 떠오르셨나요?")
+        with st.form("entry4_whatif_form"):
+            whatif = st.text_area(
+                "가설 입력",
+                value=whatif_input,
+                height=80,
+                placeholder="예: 로또 1등 + 일주일 시간 루프 / AI가 인간을 사랑한다면 / 죽은 자가 살아 돌아온다면",
+            )
+            submitted = st.form_submit_button("→ 가설 분석 시작", type="primary", use_container_width=True)
+        if submitted and whatif.strip():
+            stage_data["entry4_whatif_input"] = whatif.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+        _hunter_back_button("4")
+        return
+
+    st.markdown(f"**작가의 가설:** _{whatif_input}_")
+    st.markdown("---")
+
+    # 턴 2: 가설 분석 + 4함정 + 톤 3분기 + 진단 질문
+    diagnosis = stage_data.get("entry4_diagnosis")
+    if not diagnosis:
+        if st.button("❓ 가설 분석 + 4대 함정 + 톤 3분기", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 가설 분석 + 4함정 + 톤3분기 + 진단 질문 생성 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_4_DIAGNOSIS_PROMPT.format(whatif_input=whatif_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry4_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("4")
+        with col_reset:
+            _hunter_reset_button("4")
+        return
+
+    # 가설 분석 표시
+    analysis = diagnosis.get("hypothesis_analysis", {})
+    st.markdown("### ❓ 가설 분석")
+    st.markdown(f"**핵심 동력:** {analysis.get('core_dynamic', '')}")
+    st.markdown(f"**잠정 BJND:** {analysis.get('bjnd_provisional', '')}")
+    examples = analysis.get("examples", [])
+    if examples:
+        st.caption("유사 가설 작품: " + " / ".join(examples))
+
+    # 4대 함정 경고
+    traps = diagnosis.get("four_traps_warning", {})
+    if traps:
+        st.markdown("### ⚠ 4대 함정 경고")
+        st.markdown(f"- **함정 1 (가설 의존성):** {traps.get('trap_1_hypothesis_crutch', '')}")
+        st.markdown(f"- **함정 2 (룰 위반):** {traps.get('trap_2_rule_violation', '')}")
+        st.markdown(f"- **함정 3 (결말 회피):** {traps.get('trap_3_ending_avoidance', '')}")
+        st.markdown(f"- **함정 4 (일회성):** {traps.get('trap_4_one_shot', '')}")
+
+    # 톤 3분기
+    tones = diagnosis.get("three_tones", {})
+    if tones:
+        st.markdown("### 🎭 톤 3분기")
+        col_a, col_b, col_c = st.columns(3)
+        for col, key, label in [(col_a, "tone_a_comedy", "코미디"), (col_b, "tone_b_drama", "드라마/멜로"), (col_c, "tone_c_thriller", "스릴러/누아르")]:
+            t = tones.get(key, {})
+            with col:
+                st.markdown(f"**{label}**")
+                st.caption(t.get("description", ""))
+                if t.get("example"):
+                    st.caption(f"예: {t['example']}")
+
+    st.markdown("---")
+
+    # 진단 답변
+    diagnosis_answers = stage_data.get("entry4_diagnosis_answers")
+    if not diagnosis_answers:
+        intro = "가설 분석을 보셨으니 이제 작가의 직감을 진단합니다."
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e4_diag",
+            intro_text=intro,
+        )
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry4_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("4")
+        with col_reset:
+            _hunter_reset_button("4")
+        return
+
+    # 시드 빌드
+    seeds_result = stage_data.get("entry4_seeds")
+    if not seeds_result:
+        if st.button("🌱 시드 후보 3개 생성 (Opus 4.7)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 가설 시드 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_4_SEEDS_PROMPT.format(
+                    whatif_input=whatif_input,
+                    hypothesis_analysis=json.dumps(analysis, ensure_ascii=False, indent=2),
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry4_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("4")
+        with col_reset:
+            _hunter_reset_button("4")
+        return
+
+    # 시드 표시
+    st.markdown(f"### 🌱 시드 후보 3개 — 선택 톤: **{seeds_result.get('selected_tone', '')}**")
+    bjnd_essence = seeds_result.get("bjnd_essence", {})
+    if bjnd_essence:
+        st.markdown(f"**BJND 본질:** {bjnd_essence.get('type', '')} — {bjnd_essence.get('explanation', '')}")
+    rule_lock = seeds_result.get("hypothesis_rule_lock", "")
+    if rule_lock:
+        st.markdown(f'<div class="callout"><b>가설 룰 LOCK:</b> {rule_lock}</div>', unsafe_allow_html=True)
+    if seeds_result.get("synthesis"):
+        st.markdown(f"**본질 종합:** {seeds_result['synthesis']}")
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []), bjnd_essence=bjnd_essence)
+
+    if seeds_result.get("recommendation"):
+        st.markdown(f"**추천:** {seeds_result['recommendation']}")
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("4")
+    with col_reset:
+        _hunter_reset_button("4")
+
+
+# ────────────────────────────────────────────────────────────
+# 입구 5 — 사실 (2턴: 캔버스+5시점 → 시드)
+# ────────────────────────────────────────────────────────────
+def _hunter_entry_5_fact():
+    small_meta(
+        "사실 캔버스 + 5시점 발굴 + BJND 보조 진단 → 시드 후보 3개의 2턴 구조입니다. "
+        "사실이 인물에게 만든 게 결핍/상실 어느 순간인지 진단하고, 5시점 중 어느 자리에서 들어갈지 결정합니다."
+    )
+
+    stage_data = st.session_state.setdefault("hunter_stage_data", {})
+
+    # 턴 1: 입력
+    fact_input = stage_data.get("entry5_fact_input", "")
+    if not fact_input:
+        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 5:
+            fact_input = st.session_state.get("hunter_input", "")
+
+        st.markdown("### 1단계 — 어떤 역사·실화·뉴스를 작품화하고 싶으신가요?")
+        with st.form("entry5_fact_form"):
+            fact = st.text_area(
+                "사실 입력",
+                value=fact_input,
+                height=80,
+                placeholder="예: 1945.8.15 일본인 / 세월호 이후 / IMF 외환위기 / 5.18 광주 / n번방 사건",
+            )
+            submitted = st.form_submit_button("→ 사실 캔버스 펼침", type="primary", use_container_width=True)
+        if submitted and fact.strip():
+            stage_data["entry5_fact_input"] = fact.strip()
+            st.session_state["hunter_stage_data"] = stage_data
+            st.rerun()
+        _hunter_back_button("5")
+        return
+
+    st.markdown(f"**작가의 사실:** _{fact_input}_")
+    st.markdown("---")
+
+    # 턴 2: 사실 캔버스 + 5시점 + 진단 질문
+    diagnosis = stage_data.get("entry5_diagnosis")
+    if not diagnosis:
+        if st.button("📜 사실 캔버스 + 5시점 펼침", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 사실 캔버스 + 5시점 + 진단 질문 생성 중... (30~50초)"):
+                prompt_text = P.HUNTER_ENTRY_5_DIAGNOSIS_PROMPT.format(fact_input=fact_input)
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry5_diagnosis"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("5")
+        with col_reset:
+            _hunter_reset_button("5")
+        return
+
+    # 사실 캔버스 표시
+    canvas = diagnosis.get("fact_canvas", {})
+    if canvas:
+        st.markdown("### 📜 사실 캔버스")
+        st.markdown(f"**무슨 일:** {canvas.get('what_happened', '')}")
+        st.markdown(f"**시점/공간:** {canvas.get('time_space', '')}")
+        st.markdown(f"**핵심 인물 유형:** {canvas.get('key_figures', '')}")
+        st.markdown(f"**구조적 원인:** {canvas.get('structural_cause', '')}")
+        st.markdown(f"**결과/여파:** {canvas.get('consequences', '')}")
+        less_known = canvas.get("less_known_details", [])
+        if less_known:
+            with st.expander("덜 알려진 디테일"):
+                for d in less_known:
+                    st.markdown(f"- {d}")
+
+    # 5시점 표시
+    viewpoints = diagnosis.get("five_viewpoints", {})
+    if viewpoints:
+        st.markdown("### 🔭 5시점")
+        for key, label in [("direct", "직접"), ("pre_event", "직전"), ("post_event", "직후"), ("peripheral", "주변"), ("generational", "후세")]:
+            v = viewpoints.get(key, {})
+            with st.expander(f"**{label}** — {v.get('definition', '')}"):
+                st.markdown(f"<span style='color:#2E7D32;'>장점: {v.get('advantage', '')}</span>", unsafe_allow_html=True)
+                st.markdown(f"<span style='color:#C62828;'>위험: {v.get('risk', '')}</span>", unsafe_allow_html=True)
+                if v.get("example"):
+                    st.caption(f"예: {v['example']}")
+
+    st.markdown("---")
+
+    # 진단 답변
+    diagnosis_answers = stage_data.get("entry5_diagnosis_answers")
+    if not diagnosis_answers:
+        intro = "사실 캔버스와 5시점을 보셨으니 이제 작가의 진입점을 진단합니다."
+        answers = _hunter_render_questions(
+            diagnosis.get("diagnosis_questions", []),
+            "e5_diag",
+            intro_text=intro,
+        )
+        if st.button("→ 시드 후보 3개 빌드", type="primary", use_container_width=True):
+            if all(answers.values()):
+                stage_data["entry5_diagnosis_answers"] = answers
+                st.session_state["hunter_stage_data"] = stage_data
+                st.rerun()
+            else:
+                st.warning("5개 질문 모두 답해주세요.")
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("5")
+        with col_reset:
+            _hunter_reset_button("5")
+        return
+
+    # 시드 빌드
+    seeds_result = stage_data.get("entry5_seeds")
+    if not seeds_result:
+        if st.button("🌱 시드 후보 3개 생성 (Opus 4.7)", type="primary", use_container_width=True):
+            client = get_anthropic_client()
+            with st.spinner("Opus가 사실 기반 시드 3개 빌드 중... (40~60초)"):
+                prompt_text = P.HUNTER_ENTRY_5_SEEDS_PROMPT.format(
+                    fact_input=fact_input,
+                    fact_canvas=json.dumps(canvas, ensure_ascii=False, indent=2),
+                    diagnosis_answers=json.dumps(diagnosis_answers, ensure_ascii=False, indent=2),
+                )
+                result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+                if result.get("_parse_error"):
+                    st.error("응답 파싱 실패")
+                    with st.expander("Raw 응답"):
+                        st.text(result.get("_raw", ""))
+                else:
+                    stage_data["entry5_seeds"] = result
+                    st.session_state["hunter_stage_data"] = stage_data
+                    st.rerun()
+        col_back, col_reset = st.columns(2)
+        with col_back:
+            _hunter_back_button("5")
+        with col_reset:
+            _hunter_reset_button("5")
+        return
+
+    # 시드 표시
+    st.markdown(f"### 🌱 시드 후보 3개")
+    st.markdown(f"**선택 시점:** {seeds_result.get('selected_viewpoint', '')} · **선택 각도:** {seeds_result.get('selected_angle', '')}")
+    bjnd_essence = seeds_result.get("bjnd_essence", {})
+    if bjnd_essence:
+        st.markdown(f"**BJND 본질:** {bjnd_essence.get('type', '')} — {bjnd_essence.get('explanation', '')}")
+    ethics = seeds_result.get("ethics_lock", "")
+    if ethics:
+        st.warning(f"⚖ **윤리 LOCK:** {ethics}")
+    if seeds_result.get("synthesis"):
+        st.markdown(f"**본질 종합:** {seeds_result['synthesis']}")
+
+    _hunter_render_seed_cards(seeds_result.get("seeds", []), bjnd_essence=bjnd_essence)
+
+    if seeds_result.get("recommendation"):
+        st.markdown(f"**추천:** {seeds_result['recommendation']}")
+    add_research = seeds_result.get("additional_research_needed", [])
+    if add_research:
+        st.markdown("**추가 리서치 권장:**")
+        for r in add_research:
+            st.markdown(f"- {r}")
+    st.caption(seeds_result.get("next_step", ""))
+
+    col_back, col_reset = st.columns(2)
+    with col_back:
+        _hunter_back_button("5")
+    with col_reset:
+        _hunter_reset_button("5")
+
+
+# ═══════════════════════════════════════════════════════════
+# MAIN ROUTING (v2.0 — 3-way mode dispatch)
+# ═══════════════════════════════════════════════════════════
+mode = st.session_state.get("mode", "HOME")
+
+if mode == "HOME":
+    page_home()
+
+elif mode == "HUNTER":
+    entry = st.session_state.get("hunter_entry")
+    if entry is None:
+        page_hunter_select()
+    else:
+        page_hunter_entry(entry)
+
+elif mode == "TRIAGE":
+    # HUNTER에서 시드가 전달된 경우 안내 배너 노출
+    if st.session_state.get("seed_loaded_from_hunter"):
+        st.success(
+            "🔗 HUNTER 트랙에서 발굴한 시드가 Stage 1에 자동 입력되었습니다. "
+            "내용을 확인하시고 진단을 시작하세요."
+        )
+
+    render_stepper(st.session_state.get("current_stage", 1))
+
+    stage = st.session_state.get("current_stage", 1)
+
+    if stage == 1:
+        page_stage_1()
+    elif stage == 2:
+        if not st.session_state.get("stage_1_input"):
+            st.warning("Stage 1을 먼저 완료해주세요.")
+        else:
+            page_stage_2()
+    elif stage == 3:
+        if not st.session_state.get("stage_2_logline") or not st.session_state.get("selected_logline"):
+            st.warning("Stage 2를 먼저 완료해주세요.")
+        else:
+            page_stage_3()
+    elif stage == 4:
+        if not st.session_state.get("stage_3_hook"):
+            st.warning("Stage 3을 먼저 완료해주세요.")
+        else:
+            page_stage_4()
+    elif stage == 5:
+        if not st.session_state.get("stage_4_format"):
+            st.warning("Stage 4를 먼저 완료해주세요.")
+        else:
+            page_stage_5()
+    elif stage == 6:
+        if not st.session_state.get("stage_5_reference"):
+            st.warning("Stage 5를 먼저 완료해주세요.")
+        else:
+            page_stage_6()
+    elif stage == 7:
+        if not st.session_state.get("stage_6_market"):
+            st.warning("Stage 6을 먼저 완료해주세요.")
+        else:
+            page_stage_7()
+
+else:
+    # 알 수 없는 모드 — 안전 fallback
+    st.warning("알 수 없는 모드입니다. 홈으로 돌아갑니다.")
+    st.session_state["mode"] = "HOME"
+    st.rerun()
+
+st.markdown("---")
+st.caption(f"© 2026 BLUE JEANS PICTURES · Idea Engine {ENGINE_VERSION}")
