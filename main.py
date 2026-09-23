@@ -41,8 +41,22 @@ import market_lens_pack as MLP
 # Engine Info
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
-ENGINE_BUILD_DATE = "2026-06-07"
-ENGINE_PATCH_LEVEL = "v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
+ENGINE_BUILD_DATE = "2026-09-24"
+ENGINE_PATCH_LEVEL = "v2.3.1 (HUNTER 입구 직접 진입 오류 수정) + v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
+
+
+def _hunter_classified_entry_id() -> str:
+    """v2.3.1: 입구 0 자동분류 결과에서 entry_id를 안전하게 꺼낸다.
+    분류를 거치지 않고 입구를 직접 고른 경우(hunter_classified=None)에도 오류 없이 빈 문자열을 돌려준다.
+    entry_id가 숫자(4)든 문자열("4")이든 문자열로 통일한다."""
+    classified = st.session_state.get("hunter_classified") or {}
+    if not isinstance(classified, dict):
+        return ""
+    primary = classified.get("primary_entry") or {}
+    if not isinstance(primary, dict):
+        return ""
+    return str(primary.get("entry_id", "")).strip()
+
 
 ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-6"
 ANTHROPIC_MODEL_OPUS = "claude-opus-4-7"
@@ -320,7 +334,8 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v1.6.1 시드/백업 파일명·라벨 구분</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.1 3-C+ Hook 약점 보완 (객관식 · 선택 게이트)</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.2 로그라인 포맷 어휘 차단 · 직업 역할 확인</span><br>
-            <span style="color:#191970;font-weight:600;">+ v2.3 포맷 구조화(9열거값·확신도) · 인계 메타데이터</span>
+            <span style="color:#191970;font-weight:600;">+ v2.3 포맷 구조화(9열거값·확신도) · 인계 메타데이터</span><br>
+            <span style="color:#191970;font-weight:600;">+ v2.3.1 HUNTER 입구 직접 진입 오류 수정</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -3626,7 +3641,7 @@ def _hunter_entry_1_lack_loss():
     desire_input = stage_data.get("entry1_desire_input", "")
     if not desire_input:
         # 입구 0에서 자동 분류된 입력이 있으면 가져오기
-        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 1:
+        if _hunter_classified_entry_id() == "1":
             desire_input = st.session_state.get("hunter_input", "")
 
         st.markdown("### 1단계 — 작품을 향한 갈망을 입력하세요")
@@ -3854,7 +3869,7 @@ def _hunter_entry_2_period():
     # 턴 1: 입력
     period_input = stage_data.get("entry2_period_input", "")
     if not period_input:
-        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 2:
+        if _hunter_classified_entry_id() == "2":
             period_input = st.session_state.get("hunter_input", "")
 
         st.markdown("### 1단계 — 어떤 시대를 작품 배경으로 하고 싶으신가요?")
@@ -4060,7 +4075,7 @@ def _hunter_entry_3_trend():
     # 턴 1: 입력
     trend_input = stage_data.get("entry3_trend_input", "")
     if not trend_input:
-        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 3:
+        if _hunter_classified_entry_id() == "3":
             trend_input = st.session_state.get("hunter_input", "")
 
         st.markdown("### 1단계 — 어떤 트렌드에 대해 입장을 정리하고 싶으신가요?")
@@ -4216,7 +4231,7 @@ def _hunter_entry_4_whatif():
     # 턴 1: 입력
     whatif_input = stage_data.get("entry4_whatif_input", "")
     if not whatif_input:
-        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 4:
+        if _hunter_classified_entry_id() == "4":
             whatif_input = st.session_state.get("hunter_input", "")
 
         st.markdown("### 1단계 — 어떤 'What if' 가설이 떠오르셨나요?")
@@ -4382,7 +4397,7 @@ def _hunter_entry_5_fact():
     # 턴 1: 입력
     fact_input = stage_data.get("entry5_fact_input", "")
     if not fact_input:
-        if st.session_state.get("hunter_classified", {}).get("primary_entry", {}).get("entry_id") == 5:
+        if _hunter_classified_entry_id() == "5":
             fact_input = st.session_state.get("hunter_input", "")
 
         st.markdown("### 1단계 — 어떤 역사·실화·뉴스를 작품화하고 싶으신가요?")
