@@ -42,7 +42,7 @@ import market_lens_pack as MLP
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
 ENGINE_BUILD_DATE = "2026-09-24"
-ENGINE_PATCH_LEVEL = "v2.3.1 (HUNTER 입구 직접 진입 오류 수정) + v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
+ENGINE_PATCH_LEVEL = "v2.3.2 (HUNTER→TRIAGE 시드 폼 자동 입력) + v2.3.1 (HUNTER 입구 직접 진입 오류 수정) + v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
 
 
 def _hunter_classified_entry_id() -> str:
@@ -335,7 +335,8 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v2.1 3-C+ Hook 약점 보완 (객관식 · 선택 게이트)</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.2 로그라인 포맷 어휘 차단 · 직업 역할 확인</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.3 포맷 구조화(9열거값·확신도) · 인계 메타데이터</span><br>
-            <span style="color:#191970;font-weight:600;">+ v2.3.1 HUNTER 입구 직접 진입 오류 수정</span>
+            <span style="color:#191970;font-weight:600;">+ v2.3.1 HUNTER 입구 직접 진입 오류 수정</span><br>
+            <span style="color:#191970;font-weight:600;">+ v2.3.2 HUNTER→TRIAGE 시드 폼 자동 입력</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1483,6 +1484,22 @@ def small_meta(text: str):
 # ─────────────────────────────────────
 # STAGE PAGES
 # ─────────────────────────────────────
+def _options_with_prefill(options, prefill, alias=None):
+    """v2.3.2: selectbox 옵션 목록에 미리 채울 값을 반영하고 (옵션, 인덱스)를 돌려준다.
+    HUNTER 시드처럼 목록에 없는 자유 표기(예: '한국 + 글로벌 OTT')는 목록 두 번째 자리에 끼워 넣어
+    원문 그대로 선택된 상태로 보여준다. alias는 {'장르 미정': '미지정'}처럼 동의어를 맞춰준다."""
+    opts = list(options)
+    val = (prefill or "").strip() if isinstance(prefill, str) else ""
+    if alias and val in alias:
+        val = alias[val]
+    if not val:
+        return opts, 0
+    if val in opts:
+        return opts, opts.index(val)
+    opts.insert(1, val)
+    return opts, 1
+
+
 def page_stage_1():
     section_header("📥 STEP 1 · 아이디어 입력", "FROM RAW IDEA")
     small_meta("모호한 아이디어 한 줄부터 한 단락까지 자유롭게 입력하세요. Idea Engine이 정제하여 Creator Engine이 받아먹을 수 있는 LOCKED 시드 패키지로 변환합니다.")
@@ -1490,16 +1507,45 @@ def page_stage_1():
     # ── 이전 진행 상태 JSON 복원 위젯 ──
     render_progress_load_widget()
 
+    # v2.3.2: HUNTER 인계 시드 / JSON 복원 / Stage 1 재방문 시 기존 입력값을 폼에 미리 채움
+    pre = st.session_state.get("stage_1_input") or {}
+    if not isinstance(pre, dict):
+        pre = {}
+
+    genre_opts, genre_idx = _options_with_prefill(
+        ["미지정", "범죄/스릴러", "드라마", "액션", "로맨스", "코미디",
+         "호러/공포", "SF", "판타지", "코지 미스터리", "느와르", "사회파", "직접 입력"],
+        pre.get("genre", ""), alias={"장르 미정": "미지정"},
+    )
+    market_opts, market_idx = _options_with_prefill(
+        [
+            "한국 + 글로벌",
+            "한국 (국내)",
+            "일본 (인디·공동제작·리메이크 트랙)",
+            "인도네시아 (JAFF 트랙)",
+            "인도네시아 + 한국 OTT (Netflix SEA)",
+            "한국 + 일본 공동제작",
+            "글로벌 (해외)",
+            "직접 입력",
+        ],
+        pre.get("target_market", ""),
+    )
+    format_opts, format_idx = _options_with_prefill(
+        ["미정 (Idea Engine이 추천)", "장편 영화", "OTT 시리즈", "미니시리즈",
+         "숏폼 드라마", "웹소설", "웹툰"],
+        pre.get("format", ""),
+    )
+
     with st.form("s1"):
         c1, c2 = st.columns([2, 1])
         with c1:
-            title = st.text_input("프로젝트 제목 (가제)", placeholder="예: 만물트럭 탐정")
-        with c2:
-            genre = st.selectbox(
-                "장르",
-                ["미지정", "범죄/스릴러", "드라마", "액션", "로맨스", "코미디",
-                 "호러/공포", "SF", "판타지", "코지 미스터리", "느와르", "사회파", "직접 입력"]
+            title = st.text_input(
+                "프로젝트 제목 (가제)",
+                value="" if pre.get("title") in (None, "(제목 미정)") else pre.get("title", ""),
+                placeholder="예: 만물트럭 탐정",
             )
+        with c2:
+            genre = st.selectbox("장르", genre_opts, index=genre_idx)
             if genre == "직접 입력":
                 genre = st.text_input("장르 직접 입력", key="genre_direct")
         
@@ -1507,29 +1553,18 @@ def page_stage_1():
         with c3:
             target_market = st.selectbox(
                 "타겟 시장",
-                [
-                    "한국 + 글로벌",
-                    "한국 (국내)",
-                    "일본 (인디·공동제작·리메이크 트랙)",
-                    "인도네시아 (JAFF 트랙)",
-                    "인도네시아 + 한국 OTT (Netflix SEA)",
-                    "한국 + 일본 공동제작",
-                    "글로벌 (해외)",
-                    "직접 입력",
-                ],
+                market_opts,
+                index=market_idx,
                 help="Market Lens가 자동 적용됩니다. 일본은 인디·공동제작·리메이크 3트랙만 진입 가능 (외 0점 처리)."
             )
             if target_market == "직접 입력":
                 target_market = st.text_input("타겟 시장 직접 입력", key="market_direct")
         with c4:
-            format_pref = st.selectbox(
-                "선호 포맷",
-                ["미정 (Idea Engine이 추천)", "장편 영화", "OTT 시리즈", "미니시리즈",
-                 "숏폼 드라마", "웹소설", "웹툰"]
-            )
+            format_pref = st.selectbox("선호 포맷", format_opts, index=format_idx)
         
         raw_idea = st.text_area(
             "원본 아이디어 (필수)",
+            value=pre.get("raw_idea", "") or "",
             height=220,
             placeholder=(
                 "예시:\n"
@@ -1547,13 +1582,17 @@ def page_stage_1():
             if not title.strip() or not raw_idea.strip():
                 st.error("제목과 원본 아이디어는 필수입니다.")
             else:
-                st.session_state["stage_1_input"] = {
+                new_input = {
                     "title": title.strip(),
                     "genre": genre if genre != "미지정" else "장르 미정",
                     "target_market": target_market,
                     "format": format_pref,
                     "raw_idea": raw_idea.strip(),
                 }
+                # v2.3.2: HUNTER 발굴 메타데이터(입구·시드 ID·BJND 등)는 제출 후에도 보존
+                if pre.get("_hunter_meta"):
+                    new_input["_hunter_meta"] = pre["_hunter_meta"]
+                st.session_state["stage_1_input"] = new_input
                 st.session_state["current_stage"] = 2
                 st.rerun()
 
