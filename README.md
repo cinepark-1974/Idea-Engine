@@ -2,7 +2,7 @@
 
 **Version: v2.0** · Patch: v2.3.3 · Build: 2026-10-18 · Status: Production
 
-> **모호한 아이디어 한 줄 → Creator Engine이 그대로 받아먹는 LOCKED 시드 패키지**
+> **모호한 아이디어 한 줄 → Creator Engine이 그대로 이어받는 LOCKED 시드 패키지**
 >
 > BLUE JEANS PICTURES · Creative Discovery & Triage Engine
 

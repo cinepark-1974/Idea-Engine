@@ -5,7 +5,7 @@ BLUE JEANS PICTURES · Creative Triage Engine
 Creator Engine 입구의 진단·판정 엔진.
 모호한 아이디어를 받아 Hook 진단 → Format 추천 → Reference 매핑 →
 Market 분석 → 최종 GO/NoGo 판정을 거쳐
-Creator Engine이 받아먹을 수 있는 LOCKED 시드 패키지를 생성한다.
+Creator Engine이 이어받을 수 있는 LOCKED 시드 패키지를 생성한다.
 
 [v1.1 변경 사항 — 2026-05-05]
 Creator Engine v2.5.2가 흡수하는 5개 신규 LOCKED 영역을 시드 출력에 추가.

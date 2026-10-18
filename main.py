@@ -1971,7 +1971,7 @@ def _options_with_prefill(options, prefill, alias=None):
 
 def page_stage_1():
     section_header("📥 STEP 1 · 아이디어 입력", "FROM RAW IDEA")
-    small_meta("모호한 아이디어 한 줄부터 한 단락까지 자유롭게 입력하세요. Idea Engine이 정제하여 Creator Engine이 받아먹을 수 있는 LOCKED 시드 패키지로 변환합니다.")
+    small_meta("모호한 아이디어 한 줄부터 한 단락까지 자유롭게 입력하세요. Idea Engine이 정제하여 Creator Engine이 이어받을 수 있는 LOCKED 시드 패키지로 변환합니다.")
 
     # ── 이전 진행 상태 JSON 복원 위젯 ──
     render_progress_load_widget()
