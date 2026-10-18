@@ -41,8 +41,8 @@ import market_lens_pack as MLP
 # Engine Info
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
-ENGINE_BUILD_DATE = "2026-09-24"
-ENGINE_PATCH_LEVEL = "v2.3.2 (HUNTER→TRIAGE 시드 폼 자동 입력) + v2.3.1 (HUNTER 입구 직접 진입 오류 수정) + v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
+ENGINE_BUILD_DATE = "2026-10-18"
+ENGINE_PATCH_LEVEL = "v2.3.3 (작가 답변 우선 · LOCK 무결성 검사) + v2.3.2 (HUNTER→TRIAGE 시드 폼 자동 입력) + v2.3.1 (HUNTER 입구 직접 진입 오류 수정) + v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
 
 
 def _hunter_classified_entry_id() -> str:
@@ -189,6 +189,11 @@ def transfer_hunter_seed_to_triage():
 PROGRESS_STAGE_KEYS = [
     "stage_1_input", "stage_2_logline", "stage_3_hook", "stage_4_format",
     "stage_5_reference", "stage_6_market", "stage_7_verdict", "selected_logline",
+    # v2.3.3 — Stage 3 하위 단계 보존 (작가 답변 원장이 백업·복원에서 사라지지 않도록)
+    "stage_3_foundation",
+    "stage_3_reinforce_questions", "stage_3_reinforce_answers", "stage_3_reinforce_built",
+    "stage_3_hook_punch_questions", "stage_3_hook_punch_answers", "stage_3_hook_punch_built",
+    "stage_3_cplus_suggestions", "stage_3_cplus_rescore_count",
 ]
 PROGRESS_SCHEMA = "triage_progress_v1"
 
@@ -336,7 +341,8 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v2.2 로그라인 포맷 어휘 차단 · 직업 역할 확인</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.3 포맷 구조화(9열거값·확신도) · 인계 메타데이터</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.3.1 HUNTER 입구 직접 진입 오류 수정</span><br>
-            <span style="color:#191970;font-weight:600;">+ v2.3.2 HUNTER→TRIAGE 시드 폼 자동 입력</span>
+            <span style="color:#191970;font-weight:600;">+ v2.3.2 HUNTER→TRIAGE 시드 폼 자동 입력</span><br>
+            <span style="color:#191970;font-weight:600;">+ v2.3.3 작가 답변 우선 · LOCK 무결성 검사 7종</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1320,6 +1326,413 @@ def normalize_locked_format(raw_ft: Any) -> Dict[str, Any]:
     }
 
 
+# ═══════════════════════════════════════════════════════════
+# v2.3.3 — 작가 답변 우선 · LOCK 무결성
+# ─────────────────────────────────────────────────────────────
+# 원인: Stage 7(Opus)이 3-A·3-A+·3-B 결과와 작가 답변을 받지 못해
+#       결말·Punch를 새로 지어냈다 (「구출」 사례).
+# 대책: ① 작가 답변 원장을 Stage 7에 전달
+#       ② 엔진 코드가 작가 답변을 기계적으로 강제 (모델이 바꿔도 되돌린다)
+#       ③ Sonnet 무결성 검사 7종 + 경로 검증된 수정안 적용
+# ═══════════════════════════════════════════════════════════
+
+# 옵션 목록이 있는 질문 → (시드 키, 필드, [(작가 답변에서 찾을 말, 시드 값)])
+# 긴 말부터 찾는다 ("결말 직전"이 "결말"보다 먼저).
+OPTION_FIELD_RULES = {
+    "H2": ("locked_hook_signature", "mechanism", [
+        ("충돌", "충돌"), ("반전", "반전"), ("금기", "금기"), ("모순", "모순"),
+    ]),
+    "P2": ("locked_punch_scene", "dialogue_mode", [
+        ("대사 없음", "침묵"), ("대사 한 마디", "단일음"), ("대사 여러 줄", "폭발"),
+        ("내레이션", "독백"), ("한 마디", "단일음"), ("여러 줄", "폭발"),
+        ("단일음", "단일음"), ("침묵", "침묵"), ("폭발", "폭발"), ("독백", "독백"),
+    ]),
+    "P4": ("locked_punch_scene", "primary_emotion", [
+        (w, w) for w in ["카타르시스", "무력감", "공포", "분노", "연민", "혐오", "경이", "슬픔", "수치"]
+    ]),
+    "P5": ("locked_punch_scene", "placement", [
+        ("결말 직전", "결말 직전"), ("콜드오픈", "콜드오픈"), ("미드포인트", "미드포인트"),
+        ("클라이맥스", "클라이맥스"), ("결말", "결말"),
+    ]),
+}
+
+# 3-B 빌드 결과에서 시드로 그대로 옮기는 필드 (시드 스키마에 있는 것만)
+HOOK_COPY_FIELDS = ["hook_one_liner", "mechanism", "promise", "differentiation"]
+PUNCH_COPY_FIELDS = ["scene_description", "dialogue_mode", "final_shot",
+                     "primary_emotion", "placement", "signature_potential"]
+
+_TITLE_BRACKETS = re.compile(r"[〈「『《]([^〉」』》\n]{1,30})[〉」』》]")
+
+
+def match_option(answer: str, rules: list) -> Optional[str]:
+    """작가 답변에서 옵션 단어를 찾는다. 여러 개면 답변에서 가장 앞에 나온 것."""
+    text = str(answer or "")
+    if not text.strip():
+        return None
+    masked = text
+    hits = []
+    for needle, value in sorted(rules, key=lambda r: -len(r[0])):
+        pos = masked.find(needle)
+        while pos != -1:
+            hits.append((pos, value))
+            masked = masked[:pos] + ("\0" * len(needle)) + masked[pos + len(needle):]
+            pos = masked.find(needle)
+    if not hits:
+        return None
+    hits.sort(key=lambda h: h[0])
+    return hits[0][1]
+
+
+def free_input_value(answer: str, limit: int = 20) -> str:
+    """옵션에 없는 작가 자유 입력 → 첫 구절만 짧게."""
+    first = re.split(r"[—–\-,.\n·:(（/]", str(answer or "").strip())[0].strip()
+    first = first.strip("'\"“”‘’ ")
+    return first[:limit] if first else str(answer or "").strip()[:limit]
+
+
+def build_writer_answer_ledger(state: Dict[str, Any]) -> Dict[str, Any]:
+    """3-A+ 보강 답변 + 3-B 10문 답변을 질문 원문과 함께 묶는다."""
+    ledger: Dict[str, Any] = {"reinforce_3a_plus": [], "hook_punch_3b": []}
+
+    rq = state.get("stage_3_reinforce_questions") or {}
+    ra = state.get("stage_3_reinforce_answers") or {}
+    seen = set()
+    for q in (rq.get("reinforce_questions") or []):
+        qid = q.get("q_id", "")
+        ans = str(ra.get(qid, "") or "").strip()
+        seen.add(qid)
+        if ans:
+            ledger["reinforce_3a_plus"].append({
+                "q_id": qid,
+                "target_principle": q.get("target_principle", ""),
+                "question": q.get("question", ""),
+                "answer": ans,
+            })
+    for qid, ans in ra.items():
+        if qid not in seen and str(ans or "").strip():
+            ledger["reinforce_3a_plus"].append({"q_id": qid, "target_principle": "",
+                                                "question": "", "answer": str(ans).strip()})
+
+    hq = state.get("stage_3_hook_punch_questions") or {}
+    ha = state.get("stage_3_hook_punch_answers") or {}
+    seen = set()
+    for q in (hq.get("hook_questions") or []) + (hq.get("punch_questions") or []):
+        qid = q.get("q_id", "")
+        ans = str(ha.get(qid, "") or "").strip()
+        seen.add(qid)
+        if ans:
+            ledger["hook_punch_3b"].append({
+                "q_id": qid,
+                "principle": q.get("principle", ""),
+                "question": q.get("question", ""),
+                "hint_options": q.get("hint_options", []) or [],
+                "answer": ans,
+            })
+    for qid, ans in ha.items():
+        if qid not in seen and str(ans or "").strip():
+            ledger["hook_punch_3b"].append({"q_id": qid, "principle": "", "question": "",
+                                            "hint_options": [], "answer": str(ans).strip()})
+    return ledger
+
+
+def _ledger_answer(ledger: Dict[str, Any], qid: str) -> str:
+    for row in ledger.get("hook_punch_3b", []):
+        if row.get("q_id") == qid:
+            return row.get("answer", "")
+    return ""
+
+
+def _ledger_has_principle(ledger: Dict[str, Any], keys: tuple) -> bool:
+    for row in ledger.get("reinforce_3a_plus", []):
+        tp = str(row.get("target_principle", ""))
+        if any(k in tp for k in keys):
+            return True
+    return False
+
+
+def extract_writer_references(state: Dict[str, Any], ledger: Dict[str, Any]) -> list:
+    """작가 텍스트에서 괄호(〈〉「」『』《》)로 표기된 작품명을 뽑는다.
+    괄호 없이 쓴 작품명은 무결성 검사(Sonnet)가 추가로 잡는다."""
+    s1 = state.get("stage_1_input") or {}
+    own_title = str(s1.get("title", "") or "").strip()
+    texts = [str(s1.get("raw_idea", "") or "")]
+    texts += [r.get("answer", "") for r in ledger.get("hook_punch_3b", [])]
+    texts += [r.get("answer", "") for r in ledger.get("reinforce_3a_plus", [])]
+    out = []
+    for t in texts:
+        for m in _TITLE_BRACKETS.findall(t):
+            name = m.strip()
+            if name and name != own_title and name not in out:
+                out.append(name)
+    return out
+
+
+def _ref_present(refs: list, title: str) -> bool:
+    key = re.sub(r"\s+", "", title)
+    for r in refs:
+        if key and key in re.sub(r"\s+", "", str(r)):
+            return True
+    return False
+
+
+def normalize_project_id(pid: str, title_en: str, year: int) -> str:
+    """영문 SNAKE_CASE + 생성일 연도. 모델이 붙인 연도는 떼고 다시 붙인다."""
+    base = re.sub(r"[^A-Za-z0-9]+", "_", str(pid or title_en or "UNTITLED")).strip("_").upper()
+    base = re.sub(r"(_(19|20)\d{2})+$", "", base) or "UNTITLED"
+    return f"{base}_{year}"
+
+
+def apply_writer_priority(state: Dict[str, Any], vd: Dict[str, Any]) -> Dict[str, Any]:
+    """Stage 7 결과에 작가 답변을 기계적으로 강제한다. 여러 번 불러도 결과가 같다.
+
+    - 최초 1회: 3-B 빌드 결과의 Hook·Punch를 시드로 그대로 옮김
+    - 매번: 옵션 필드 강제 · Hook 5축 점수 동기화 · project_id 연도 · 작가 괄호 레퍼런스 보존
+    - 매번: 판정 어휘·점수 표기 경고 수집
+    """
+    seed = vd.get("locked_seed_package")
+    if not isinstance(seed, dict):
+        return vd
+    log = vd.setdefault("_writer_priority_log", [])
+    ledger = build_writer_answer_ledger(state)
+
+    def _record(field, before, after, reason):
+        if before != after:
+            log.append({"field": field, "before": before, "after": after, "reason": reason})
+
+    # ① 3-B 빌드 결과 이식 (최초 1회 — 이후 무결성 수정을 덮지 않기 위해)
+    if not vd.get("_writer_priority_applied"):
+        hp = state.get("stage_3_hook_punch_built") or {}
+        for seed_key, src, fields in (
+            ("locked_hook_signature", hp.get("hook_signature"), HOOK_COPY_FIELDS),
+            ("locked_punch_scene", hp.get("punch_scene"), PUNCH_COPY_FIELDS),
+        ):
+            if isinstance(src, dict) and src:
+                tgt = seed.get(seed_key)
+                if not isinstance(tgt, dict):
+                    tgt = {}
+                    seed[seed_key] = tgt
+                for f in fields:
+                    v = src.get(f)
+                    if v not in (None, ""):
+                        _record(f"{seed_key}.{f}", tgt.get(f), v, "3-B 빌드 결과(작가 답변 기반) 이식")
+                        tgt[f] = v
+        vd["_writer_priority_applied"] = True
+        vd["_generated_year"] = datetime.now().year
+
+    # ② 옵션 필드 강제 — 옵션 값 또는 작가 자유 입력만 허용
+    for qid, (seed_key, field, rules) in OPTION_FIELD_RULES.items():
+        ans = _ledger_answer(ledger, qid)
+        if not ans:
+            continue
+        val = match_option(ans, rules)
+        reason = f"{qid} 작가 답변 옵션 강제"
+        if val is None:
+            val = free_input_value(ans)
+            reason = f"{qid} 작가 자유 입력 강제 (옵션 외 답변)"
+        tgt = seed.get(seed_key)
+        if not isinstance(tgt, dict):
+            tgt = {}
+            seed[seed_key] = tgt
+        _record(f"{seed_key}.{field}", tgt.get(field), val, reason)
+        tgt[field] = val
+
+    # ③ Hook 5축 점수 동기화
+    hk = state.get("stage_3_hook") or {}
+    hs = hk.get("total_score")
+    try:
+        hs = int(hs)
+    except (TypeError, ValueError):
+        hs = None
+    if hs is not None:
+        before = seed.get("locked_hook_score")
+        try:
+            before_i = int(before)
+        except (TypeError, ValueError):
+            before_i = None
+        if before_i != hs:
+            _record("locked_hook_score", before, hs, "Stage 3 Hook 5축 total_score와 동기화")
+        seed["locked_hook_score"] = hs
+
+    # ④ project_id — 생성일 연도
+    year = vd.get("_generated_year") or datetime.now().year
+    new_pid = normalize_project_id(seed.get("project_id", ""), seed.get("title_en", ""), year)
+    _record("project_id", seed.get("project_id"), new_pid, "생성일 연도로 정규화")
+    seed["project_id"] = new_pid
+
+    # ⑤ 작가 레퍼런스 보존 (괄호 표기분)
+    refs = seed.get("locked_references")
+    if not isinstance(refs, list):
+        refs = []
+        seed["locked_references"] = refs
+    for title in extract_writer_references(state, ledger):
+        if not _ref_present(refs, title):
+            line = f"{title} — 작가 제시 레퍼런스"
+            refs.append(line)
+            _record("locked_references", None, line, "작가 제시 레퍼런스 누락 보존")
+
+    # ⑥ 판정 어휘 · 점수 표기 경고 (자동 수정하지 않고 무결성 검사로 넘김)
+    warns = []
+    fv = str(vd.get("final_verdict", "") or "")
+    for fld in ("executive_summary", "verdict_reasoning"):
+        txt = str(vd.get(fld, "") or "")
+        if re.search(r"(?i)\bPASS\b|\bFAIL\b", txt):
+            warns.append(f"{fld}: 판정 어휘 외 표현(PASS/FAIL) — final_verdict는 {fv}")
+        for m in re.finditer(r"Hook(?:\s*5축)?\s*(\d{1,2})\s*점", txt):
+            if hs is not None and int(m.group(1)) != hs:
+                warns.append(f"{fld}: Hook 점수 {m.group(1)}점 표기 — Hook 5축 점수는 {hs}점")
+    vd["_guard_warnings"] = warns
+
+    vd["_writer_ledger_snapshot"] = ledger
+    return vd
+
+
+# ─── 무결성 검사 수정안 적용 (경로 검증) ───
+_PATH_TOKEN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)|\[(\d+)\]|\.")
+
+
+def _parse_path(path: str) -> Optional[list]:
+    path = str(path or "").strip()
+    if not path:
+        return None
+    tokens, pos = [], 0
+    while pos < len(path):
+        m = _PATH_TOKEN.match(path, pos)
+        if not m:
+            return None
+        if m.group(1) is not None:
+            tokens.append(m.group(1))
+        elif m.group(2) is not None:
+            tokens.append(int(m.group(2)))
+        pos = m.end()
+    return tokens or None
+
+
+def apply_fix(vd: Dict[str, Any], fix: Dict[str, Any]) -> tuple:
+    """(성공 여부, 사유). 존재하지 않는 경로·타입 불일치는 거부한다."""
+    if not isinstance(fix, dict):
+        return False, "수정안 없음"
+    tokens = _parse_path(fix.get("path", ""))
+    op = fix.get("op", "")
+    value = fix.get("value")
+    if not tokens or op not in ("set", "append"):
+        return False, "경로·연산 형식 오류"
+    seed = vd.get("locked_seed_package") or {}
+    if tokens[0] == "executive_summary":
+        root, tokens = vd, tokens
+    elif tokens[0] == "locked_seed_package":
+        root, tokens = seed, tokens[1:]
+    else:
+        root = seed
+    if not tokens or not isinstance(tokens[0], str) or tokens[0] not in root:
+        return False, "존재하지 않는 키"
+    parent = root
+    for t in tokens[:-1]:
+        if isinstance(t, int):
+            if not isinstance(parent, list) or t >= len(parent):
+                return False, "배열 범위 밖"
+        elif not isinstance(parent, dict) or t not in parent:
+            return False, "존재하지 않는 키"
+        parent = parent[t]
+    last = tokens[-1]
+    if isinstance(last, int):
+        if not isinstance(parent, list) or last >= len(parent):
+            return False, "배열 범위 밖"
+    elif not isinstance(parent, dict) or last not in parent:
+        return False, "존재하지 않는 키"
+    current = parent[last]
+
+    if op == "append":
+        if not isinstance(current, list):
+            return False, "배열이 아닌 곳에 append"
+        if current and type(current[0]) is not type(value):
+            return False, "배열 원소 타입 불일치"
+        current.append(value)
+        return True, "append"
+    if current is not None and type(current) is not type(value):
+        if not (isinstance(current, (int, float)) and isinstance(value, (int, float))):
+            return False, "값 타입 불일치"
+    parent[last] = value
+    return True, "set"
+
+
+def run_integrity_check(client, state: Dict[str, Any], vd: Dict[str, Any]) -> Dict[str, Any]:
+    seed = vd.get("locked_seed_package") or {}
+    s1 = state.get("stage_1_input") or {}
+    foundation = state.get("stage_3_reinforce_built") or state.get("stage_3_foundation") or {}
+    ledger = build_writer_answer_ledger(state)
+    ledger_for_prompt = dict(ledger)
+    ledger_for_prompt["raw_idea"] = s1.get("raw_idea", "")
+    det_log = {
+        "writer_priority_log": vd.get("_writer_priority_log", []),
+        "guard_warnings": vd.get("_guard_warnings", []),
+    }
+    prompt_text = P.SEED_INTEGRITY_CHECK_PROMPT.format(
+        title=s1.get("title", ""),
+        verdict=vd.get("final_verdict", ""),
+        hook_score=seed.get("locked_hook_score", ""),
+        foundation_score=foundation.get("foundation_total_score", "(3-A 미실행)"),
+        writer_answers=json.dumps(ledger_for_prompt, ensure_ascii=False, indent=2),
+        deterministic_log=json.dumps(det_log, ensure_ascii=False, indent=2),
+        seed_json=json.dumps(seed, ensure_ascii=False, indent=2),
+        executive_summary=vd.get("executive_summary", ""),
+    )
+    result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
+    if result.get("_parse_error"):
+        return {"_error": "무결성 검사 응답 파싱 실패", "_raw": result.get("_raw", "")[:2000]}
+    result["_applied"] = False
+    result["_checked_at"] = datetime.now().isoformat()
+    return result
+
+
+def apply_integrity_fixes(state: Dict[str, Any], vd: Dict[str, Any]) -> Dict[str, Any]:
+    ic = vd.get("_integrity_check") or {}
+    applied, rejected = [], []
+    for iss in (ic.get("issues") or [])[:30]:
+        fix = iss.get("fix")
+        if not fix:
+            continue
+        ok, why = apply_fix(vd, fix)
+        (applied if ok else rejected).append({"id": iss.get("id"), "path": fix.get("path"), "result": why})
+    # 괄호 없이 언급된 작가 레퍼런스 — 수정안에서 빠졌으면 보존
+    seed = vd.get("locked_seed_package") or {}
+    refs = seed.get("locked_references")
+    if isinstance(refs, list):
+        for title in ic.get("writer_references_detected", []) or []:
+            t = str(title).strip()
+            if t and not _ref_present(refs, t) and t != (state.get("stage_1_input") or {}).get("title"):
+                refs.append(f"{t} — 작가 제시 레퍼런스")
+                applied.append({"id": "REF", "path": "locked_references", "result": f"append {t}"})
+    # 작가 답변 강제는 수정안보다 우선 — 다시 적용
+    apply_writer_priority(state, vd)
+    ic["_applied"] = True
+    ic["_applied_fixes"] = applied
+    ic["_rejected_fixes"] = rejected
+    vd["_integrity_check"] = ic
+    return vd
+
+
+def integrity_meta(vd: Dict[str, Any]) -> Dict[str, Any]:
+    ic = vd.get("_integrity_check")
+    if not isinstance(ic, dict) or ic.get("_error"):
+        return {"performed": False, "note": (ic or {}).get("_error", "무결성 검사 미실행")}
+    issues = ic.get("issues") or []
+    return {
+        "performed": True,
+        "overall": ic.get("overall", ""),
+        "issues_found": len(issues),
+        "critical": sum(1 for i in issues if i.get("severity") == "CRITICAL"),
+        "fixes_applied": bool(ic.get("_applied")),
+        "applied_fixes": ic.get("_applied_fixes", []),
+        "rejected_fixes": ic.get("_rejected_fixes", []),
+        "unfixed_issues": [
+            {"id": i.get("id"), "category": i.get("category"), "severity": i.get("severity"),
+             "problem": i.get("problem")}
+            for i in issues if not i.get("fix") or not ic.get("_applied")
+        ],
+        "checked_at": ic.get("_checked_at", ""),
+    }
+
+
 def build_locked_source(state: Dict[str, Any], seed: Dict[str, Any]) -> Dict[str, str]:
     """각 LOCKED 항목의 출처를 표시 (주문 6).
 
@@ -1350,7 +1763,40 @@ def build_locked_source(state: Dict[str, Any], seed: Dict[str, Any]) -> Dict[str
     if "locked_target" in src and str(s1.get("target_market", "") or "").strip():
         src["locked_target"] = "writer"
 
+    # ─── v2.3.3: 작가 답변에서 온 항목은 writer ───
+    ledger = build_writer_answer_ledger(state)
+    if ledger.get("hook_punch_3b"):
+        hook_ids = {r.get("q_id") for r in ledger["hook_punch_3b"]}
+        if any(str(q).startswith("H") for q in hook_ids) and "locked_hook_signature" in src:
+            src["locked_hook_signature"] = "writer"
+        if any(str(q).startswith("P") for q in hook_ids) and "locked_punch_scene" in src:
+            src["locked_punch_scene"] = "writer"
+    if _ledger_has_principle(ledger, ("원칙 5", "Ending", "결말")):
+        for k in ("locked_ending_form", "locked_ending_promise"):
+            if k in src:
+                src[k] = "writer"
+    if _ledger_has_principle(ledger, ("원칙 1", "Empathy", "감정이입")):
+        if "locked_empathy_anchor" in src:
+            src["locked_empathy_anchor"] = "writer"
+
     return src
+
+
+def _raw_idea_with_writer_refs(raw_idea: str) -> str:
+    """Stage 5용 — 3-B H4(가장 닮은 작품) 답변을 작가 레퍼런스로 덧붙인다 (v2.3.3)."""
+    h4 = _ledger_answer(build_writer_answer_ledger(dict(st.session_state)), "H4")
+    if not h4:
+        return raw_idea
+    return (f"{raw_idea}\n\n[작가 제시 레퍼런스 — 매핑에 반드시 포함하고, "
+            f"주인공 직업·소속을 사실대로 서술]: {h4}")
+
+
+LOCKED_SOURCE_LEGEND = {
+    "writer": "작가가 직접 입력하거나 답한 값 (STEP 1 입력 · 3-A+ 보강 답변 · 3-B Hook&Punch 답변)",
+    "engine_writer_selected": "엔진이 후보를 만들고 작가가 채택한 값 (예: 로그라인 3안 중 선택)",
+    "engine": "엔진이 진단 결과로 생성한 값",
+    "note": "locked_source의 값은 각 LOCKED 항목의 '출처'를 뜻한다. 항목 내용이 아니다.",
+}
 
 
 def build_seed_json(state: Dict[str, Any]) -> str:
@@ -1392,6 +1838,14 @@ def build_seed_json(state: Dict[str, Any]) -> str:
             _ft_raw.setdefault("rationale", _s4d.get("rationale", ""))
     seed["locked_format"] = normalize_locked_format(_ft_raw)
 
+    # ─── v2.3.3: 작가 답변 강제 (idempotent) ───
+    vd = state["stage_7_verdict"]
+    apply_writer_priority(state, vd)
+    seed = vd.get("locked_seed_package", seed)
+    _fd = state.get("stage_3_reinforce_built") or state.get("stage_3_foundation") or {}
+    _fd0 = state.get("stage_3_foundation") or {}
+    _ledger = build_writer_answer_ledger(state)
+
     creator_input = {
         "_idea_engine_meta": {
             "version": ENGINE_VERSION,
@@ -1413,6 +1867,21 @@ def build_seed_json(state: Dict[str, Any]) -> str:
                 ),
             },
             "locked_source": build_locked_source(state, seed),
+            # ─── v2.3.3 신규 메타 (LOCKED 키 아님 — 24키 유지) ───
+            "locked_source_legend": LOCKED_SOURCE_LEGEND,
+            "scores": {
+                "hook_5axis_score": seed.get("locked_hook_score", 0),
+                "foundation_5principle_score": _fd.get("foundation_total_score", ""),
+                "foundation_5principle_score_before_reinforce": (
+                    _fd0.get("foundation_total_score", "") if state.get("stage_3_reinforce_built") else ""
+                ),
+                "foundation_verdict": _fd.get("foundation_verdict", ""),
+                "note": "Hook 5축 점수(3-C 채점)와 본질 5원칙 점수(3-A/3-A+ 진단)는 서로 다른 50점 척도다.",
+            },
+            "writer_answers": _ledger,
+            "writer_priority_log": vd.get("_writer_priority_log", []),
+            "guard_warnings": vd.get("_guard_warnings", []),
+            "integrity_check": integrity_meta(vd),
         },
         "title": seed.get("title_kr", ""),
         "raw_idea": seed.get("locked_logline", ""),
@@ -2683,7 +3152,7 @@ def page_stage_5():
                     title=inp["title"], logline=logline,
                     genre=inp["genre"], format=primary_format,
                     target_market=inp.get("target_market", ""),
-                    raw_idea=inp["raw_idea"],
+                    raw_idea=_raw_idea_with_writer_refs(inp["raw_idea"]),
                     market_lens=market_lens_text,
                 )
                 result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
@@ -2898,6 +3367,17 @@ def page_stage_7():
                     format_data=json.dumps(st.session_state["stage_4_format"], ensure_ascii=False, indent=2),
                     reference_data=json.dumps(st.session_state["stage_5_reference"], ensure_ascii=False, indent=2),
                     market_data=json.dumps(st.session_state["stage_6_market"], ensure_ascii=False, indent=2),
+                    # v2.3.3 — 3-A·3-A+·3-B 결과와 작가 답변 원장을 Opus에 전달
+                    foundation_data=json.dumps(
+                        st.session_state.get("stage_3_reinforce_built")
+                        or st.session_state.get("stage_3_foundation") or {},
+                        ensure_ascii=False, indent=2),
+                    hook_punch_data=json.dumps(
+                        st.session_state.get("stage_3_hook_punch_built") or {},
+                        ensure_ascii=False, indent=2),
+                    writer_answers=json.dumps(
+                        build_writer_answer_ledger(dict(st.session_state)),
+                        ensure_ascii=False, indent=2),
                 )
                 result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
                 if result.get("_parse_error"):
@@ -2905,8 +3385,15 @@ def page_stage_7():
                     with st.expander("Raw 응답"):
                         st.text(result.get("_raw", ""))
                     return
-                st.session_state["stage_7_verdict"] = result
-                st.rerun()
+            # v2.3.3 — 작가 답변 기계 강제 → 무결성 검사 자동 실행
+            apply_writer_priority(dict(st.session_state), result)
+            with st.spinner("Sonnet이 LOCK 무결성 검사 중 (작가 답변 대조 · 사실 · 모순 · 충돌)... (20~40초)"):
+                try:
+                    result["_integrity_check"] = run_integrity_check(client, dict(st.session_state), result)
+                except Exception as e:
+                    result["_integrity_check"] = {"_error": f"무결성 검사 실패: {type(e).__name__}: {e}"}
+            st.session_state["stage_7_verdict"] = result
+            st.rerun()
     else:
         vd = st.session_state["stage_7_verdict"]
         verdict = vd.get("final_verdict", "")
@@ -2956,6 +3443,84 @@ def page_stage_7():
         st.markdown("### 임원 요약 (Executive Summary)")
         st.success(vd.get("executive_summary", ""))
         
+        # ─── v2.3.3: 작가 답변 우선 · LOCK 무결성 검사 ───
+        apply_writer_priority(dict(st.session_state), vd)
+        st.markdown("---")
+        section_header("🛡 LOCK 무결성 검사", "WRITER PRIORITY · INTEGRITY")
+        wlog = vd.get("_writer_priority_log", []) or []
+        with st.expander(f"작가 답변 강제 내역 · {len(wlog)}건 (엔진 코드가 자동 처리)", expanded=False):
+            if not wlog:
+                st.caption("모델 출력이 작가 답변과 일치해 강제할 항목이 없었습니다.")
+            for row in wlog:
+                st.markdown(
+                    f"- **{row.get('field', '')}** — {row.get('reason', '')}  \n"
+                    f"  변경 전: `{row.get('before')}` → 변경 후: `{row.get('after')}`"
+                )
+        for w in vd.get("_guard_warnings", []) or []:
+            st.warning(w)
+
+        ic = vd.get("_integrity_check")
+        sev_color = {"CRITICAL": "#C62828", "MAJOR": "#F9A825", "MINOR": "#6B6B7B"}
+        cat_label = {
+            "writer_override": "작가 답변 덮어쓰기", "off_option": "옵션 외 값",
+            "fact_error": "레퍼런스 사실 오류", "contradiction": "자기모순 표현",
+            "lock_conflict": "LOCK 간 충돌", "verdict_inconsistency": "판정·점수 불일치",
+            "infrastructure_reality": "공공 인프라 기능 범위",
+        }
+        if not ic or ic.get("_error"):
+            if ic and ic.get("_error"):
+                st.error(ic["_error"])
+            if st.button("🛡 무결성 검사 실행 (Sonnet)", key="ic_run", use_container_width=True):
+                client = get_anthropic_client()
+                with st.spinner("Sonnet이 LOCK 무결성 검사 중... (20~40초)"):
+                    vd["_integrity_check"] = run_integrity_check(client, dict(st.session_state), vd)
+                st.rerun()
+        else:
+            issues = ic.get("issues", []) or []
+            if not issues:
+                st.success("무결성 검사 통과 — 적출된 결함이 없습니다.")
+            else:
+                n_c = sum(1 for i in issues if i.get("severity") == "CRITICAL")
+                st.markdown(
+                    f'<div class="callout"><b>적출 {len(issues)}건</b> (CRITICAL {n_c}) · '
+                    f'{ic.get("summary", "")}</div>', unsafe_allow_html=True)
+                for i in issues:
+                    sv = i.get("severity", "")
+                    fix = i.get("fix") or {}
+                    fix_txt = (f"<br><span style='color:#191970'>수정안: <code>{fix.get('op', '')}</code> "
+                               f"<code>{fix.get('path', '')}</code> → {fix.get('value', '')}</span>") if fix else ""
+                    st.markdown(
+                        f'<div style="border-left:3px solid {sev_color.get(sv, "#191970")};padding:8px 10px;'
+                        f'margin:6px 0;background:#FFFEF5;">'
+                        f'<b>{i.get("id", "")} · {cat_label.get(i.get("category", ""), i.get("category", ""))}</b> '
+                        f'<span style="color:{sev_color.get(sv, "#191970")};font-weight:700">{sv}</span><br>'
+                        f'위치: <code>{i.get("path", "")}</code><br>'
+                        f'{i.get("problem", "")}<br><span style="color:#6B6B7B">근거: {i.get("evidence", "")}</span>'
+                        f'{fix_txt}</div>', unsafe_allow_html=True)
+            refs_det = ic.get("writer_references_detected", []) or []
+            if refs_det:
+                st.caption("작가 제시 레퍼런스 감지: " + " · ".join(str(r) for r in refs_det))
+
+            ca, cr2 = st.columns(2)
+            with ca:
+                if ic.get("_applied"):
+                    st.success(f"수정안 적용 완료 — 적용 {len(ic.get('_applied_fixes', []))}건 · "
+                               f"거부 {len(ic.get('_rejected_fixes', []))}건")
+                    for rj in ic.get("_rejected_fixes", []) or []:
+                        st.caption(f"거부: {rj.get('id')} {rj.get('path')} — {rj.get('result')}")
+                elif issues or refs_det:
+                    if st.button("✓ 수정안 일괄 적용", key="ic_apply", type="primary", use_container_width=True):
+                        apply_integrity_fixes(dict(st.session_state), vd)
+                        st.rerun()
+            with cr2:
+                if st.button("↻ 무결성 재검사", key="ic_rerun", use_container_width=True):
+                    client = get_anthropic_client()
+                    with st.spinner("Sonnet이 LOCK 무결성 재검사 중... (20~40초)"):
+                        vd["_integrity_check"] = run_integrity_check(client, dict(st.session_state), vd)
+                    st.rerun()
+            st.caption("레퍼런스 사실 검사는 모델 지식 기반입니다. 웹 검증이 아니므로 '확인 필요' 항목은 직접 확인해 주십시오. "
+                       "작가 답변 강제는 수정안 적용 뒤에도 다시 적용됩니다.")
+
         st.markdown("---")
         section_header("🔑 LOCKED 시드 패키지", "LOCKED SEED PACKAGE")
         
