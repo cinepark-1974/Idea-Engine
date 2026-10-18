@@ -759,6 +759,70 @@ FINAL_VERDICT_PROMPT = """당신은 한국 영화/드라마 산업의 시니어 
 [Stage 6 - Market 진단 결과]
 {market_data}
 
+[Stage 3-A / 3-A+ - Story Core 5원칙 진단 결과 (보강본이 있으면 보강본)]
+{foundation_data}
+
+[Stage 3-B - Hook & Punch 빌드 결과]
+{hook_punch_data}
+
+[★ 작가 답변 원장 — 3-A+ 보강 답변 · 3-B Hook & Punch 10문 답변 (질문 원문 포함) ★]
+{writer_answers}
+
+[★ v2.3.3 작가 답변 우선 규칙 — 모든 규칙보다 우선한다 ★]
+작가 답변 원장에 있는 답은 작가가 명시적으로 내린 결정이다. 진단관은 이를 바꾸지 못한다.
+- 작가가 답한 항목은 작가의 답을 그대로 LOCK한다. 더 극적이거나 시장성이 좋아 보이는
+  대안이 있어도 교체하지 않는다. 대안은 locked_risks_to_address 또는
+  locked_creator_questions의 options로만 제시한다.
+- 결말: 3-A+ 답변 중 원칙 5(결말)를 향한 답이 있으면 locked_ending_form과
+  locked_ending_promise는 그 답의 결말 사건·마지막 이미지·결말 유형을 그대로 따른다.
+  작가가 이미 정한 결말을 locked_creator_questions에서 다시 묻지 않는다.
+- Punch: 3-B 답변 P1(장면)·P2(대사)·P3(마지막 컷)·P4(정서)·P5(배치)는
+  locked_punch_scene의 scene_description·dialogue_mode·final_shot·primary_emotion·placement에
+  그대로 대응한다. 3-B 빌드 결과가 있으면 그 punch_scene을 그대로 옮긴다.
+- Hook: 3-B 답변 H1~H4와 3-B 빌드 결과의 hook_signature를 locked_hook_signature에 그대로 옮긴다.
+- 옵션 목록이 있는 질문(H2·P2·P4·P5)의 값은 그 목록 안의 값이거나 작가가 직접 쓴 표현이어야 한다.
+  목록에도 없고 작가도 쓰지 않은 새 단어를 만들어 넣지 않는다.
+- 레퍼런스: 작가가 답변·원본 아이디어에서 직접 언급한 작품은 locked_references에 전부 포함한다.
+  엔진은 작가 레퍼런스 뒤에 1~2편만 보완한다. 합계 최대 5편.
+
+[★ v2.3.3 판정·점수 표기 규칙 ★]
+- 판정 어휘는 GO / CONDITIONAL / NOGO 셋만 쓴다. PASS·FAIL·합격·통과 같은 다른 판정어를
+  executive_summary·verdict_reasoning 어디에도 쓰지 않는다. final_verdict와 다른 판정을 서술하지 않는다.
+- 점수는 두 종류이며 섞지 않는다.
+  · Hook 5축 점수 = Stage 3 Hook 진단 결과의 total_score (locked_hook_score에 그대로 기입)
+  · 본질 5원칙 점수 = Stage 3-A/3-A+ 결과의 foundation_total_score
+  점수를 언급할 때는 반드시 "Hook 5축 N점" 또는 "본질 5원칙 N점"으로 이름을 붙인다.
+
+[★ v2.3.3 레퍼런스 사실 규칙 ★]
+- 레퍼런스 설명은 그 작품의 주인공 직업·소속·수사 방식을 사실과 다르게 쓰지 않는다.
+  경찰·형사·요원이 주인공인 작품을 "제도 밖 단독 주인공", "공권력 바깥" 같은 좌표로 쓰지 않는다.
+  유사성은 사실과 맞는 축(구조·악역 구도·감정선)으로만 설명한다.
+- 관객 수·흥행 순위·"천만" 같은 흥행 수치는 시드와 요약 어디에도 쓰지 않는다.
+  흥행 좌표가 필요하면 수치 없이 장르 계보로만 서술한다.
+
+[★ v2.3.3 문장 무결성 자가 점검 — 출력 전 반드시 수행 ★]
+- 자기모순 표현 금지: 한 구절 안에서 서로를 부정하는 표현을 쓰지 않는다.
+  예: "국적 세탁한 한국인"(국적을 세탁했다면 원래 국적이 따로 있다는 뜻), "혼자 하는 팀 수사".
+  대안을 쓸 때는 "A 또는 B" 나열 대신 하나로 확정하고, 하나로 확정할 수 없으면
+  locked_creator_questions로 넘긴다.
+- LOCK 간 충돌 금지: locked_core_decisions·locked_ending_form·locked_punch_scene·
+  locked_visual_motifs 사이에 동시에 지킬 수 없는 규칙이 있으면 안 된다.
+  예: "카메라는 끝까지 주인공 동선에만 고정" + "결정적 장치를 조력자가 단독으로 작동"
+  → 조력자의 단독 장면이 필요해져 동시 충족 불가. 이 경우 하나를 고치거나
+  "조력자 행동은 주인공이 통화·화면으로 듣고 보는 방식으로만 노출"처럼 둘을 함께 지키는 방식을 명시한다.
+
+[★ v2.3.3 공공 인프라 기능 범위 — 임시 규칙 (v2.4 Reality Pre-Check 전까지) ★]
+- 재난문자·경계경보·112/119·CCTV 관제·주민등록·출입국 같은 공공 시스템을 플롯 장치로 쓸 때,
+  그 시스템이 실제로 할 수 없는 기능을 부여하지 않는다.
+- 확인된 사실: 휴대전화 재난문자는 기지국 셀 방송으로 보내는 짧은 텍스트다.
+  위급·긴급재난문자 90자, 안전안내문자 157자. 영상 재생 기능은 없다.
+  영상 폭로가 필요하면 "재난문자로 링크·단서 문구를 송출하고 영상은 다른 매체로 확산"처럼
+  실제 기능 범위 안에서 설계한다.
+- 확신이 없는 시스템 기능은 단정하지 않고 locked_risks_to_address에 "제도 사실성 확인 필요"로 기록한다.
+
+[project_id 규칙]
+- project_id는 영문 SNAKE_CASE 제목만 쓴다. 연도 접미사를 붙이지 않는다 (엔진이 생성일 연도를 붙인다).
+
 [최종 판정 작업]
 
 1. 종합 판정 (GO / CONDITIONAL / NOGO)
@@ -868,7 +932,7 @@ Stage 4의 format_confidence 판정을 그대로 승계한다.
     "Creator Engine에서 결정해야 할 핵심 질문 3개"
   ],
   "locked_seed_package": {{
-    "project_id": "프로젝트 식별자 (영문 SNAKE_CASE)",
+    "project_id": "프로젝트 식별자 (영문 SNAKE_CASE, 연도 접미사 없이)",
     "title_kr": "한글 제목 (가제)",
     "title_en": "영문 제목 (가제)",
     "locked_logline": "최종 확정된 로그라인 1개 — ★ 매체·회차·러닝타임·플랫폼 명칭 절대 포함 금지 ★",
@@ -896,7 +960,7 @@ Stage 4의 format_confidence 판정을 그대로 승계한다.
       "deep": "심층 주제"
     }},
     "locked_references": [
-      "참고 작품 3편 (가장 핵심적인)"
+      "작가 제시 레퍼런스 전부 + 엔진 보완 1~2편 (합계 최대 5편). 형식: 제목 (연도) — 사실과 맞는 유사 축 1구절"
     ],
     "locked_hook_score": "Hook 총점 (0~50)",
     "locked_market_stars": {{
@@ -2984,4 +3048,101 @@ STAGE_3A_PLUS_BUILD_PROMPT = """당신은 BLUE JEANS PICTURES의 본질 보강 �
 - 출력 키 구조는 3-A 원본과 100% 동일해야 한다 — 하류 단계(_render_foundation_result, 3-B)가 그대로 받는다.
 - diagnosis_score는 엄격하게. 작가에게 듣기 좋은 점수를 주지 않는다. 답변이 부실하면 점수는 오르지 않는다.
 - _reinforced: true 플래그로 보강본임을 표시한다.
+""" + SHARED_RULES
+
+
+# ============================================================================
+# v2.3.3 : LOCK 무결성 검사 (Stage 7 직후 · Sonnet)
+# ============================================================================
+# Stage 7(Opus)이 만든 LOCKED 시드를 작가 답변 원장과 대조해
+# 덮어쓰기 · 옵션 외 값 · 레퍼런스 사실 오류 · 자기모순 · LOCK 간 충돌 ·
+# 판정 불일치 · 공공 인프라 기능 범위 7종을 적출하고, 경로 단위 수정안을 낸다.
+# 수정안은 엔진 코드가 경로를 검증한 뒤 적용한다 (존재하지 않는 경로·타입 불일치는 버린다).
+# ============================================================================
+
+SEED_INTEGRITY_CHECK_PROMPT = """당신은 BLUE JEANS PICTURES의 LOCKED 시드 무결성 검수관이다.
+최종 판정관(Opus)이 만든 LOCKED 시드를 작가의 실제 답변과 대조해 결함을 적출하고,
+최소한의 수정안을 낸다. 시드를 새로 쓰지 않는다. 결함이 있는 지점만 고친다.
+
+[작품]
+- 제목: {title}
+- 최종 판정: {verdict}
+- Hook 5축 점수: {hook_score}
+- 본질 5원칙 점수: {foundation_score}
+
+[작가 답변 원장 — 작가가 명시적으로 내린 결정]
+{writer_answers}
+
+[엔진 코드가 이미 기계적으로 처리한 내역]
+{deterministic_log}
+
+[검사 대상 LOCKED 시드]
+{seed_json}
+
+[검사 대상 임원 요약]
+{executive_summary}
+
+[적출 대상 7종]
+
+1. writer_override — 작가 답변과 다른 LOCK 값
+   작가가 답한 결말·Punch·Hook·인물 설정이 시드에서 다른 내용으로 바뀌었는가.
+   특히 locked_ending_form · locked_ending_promise · locked_punch_scene · locked_hook_signature ·
+   locked_creator_questions(작가가 이미 답한 것을 다시 묻는가)를 확인한다.
+   수정은 작가 답변 쪽으로만 한다. 작가 답변을 시드에 맞추지 않는다.
+
+2. off_option — 옵션 목록이 있는 필드에 목록 밖 값
+   (mechanism: 충돌·반전·금기·모순 / dialogue_mode: 침묵·단일음·폭발·독백 /
+    primary_emotion: 공포·분노·무력감·연민·카타르시스·혐오·경이·슬픔·수치 /
+    placement: 콜드오픈·미드포인트·클라이맥스·결말 직전·결말)
+   단 작가가 직접 쓴 표현이면 허용한다.
+
+3. fact_error — 레퍼런스 설명의 사실 오류
+   주인공 직업·소속·수사 방식, 개봉 연도, 흥행 수치. 경찰·형사 주인공 작품을
+   "제도 밖 단독 주인공"으로 쓴 경우 등. 흥행 수치는 확실하더라도 삭제를 권한다.
+   본인 지식으로 확신할 수 없는 사실은 단정하지 말고 severity MINOR + "확인 필요"로 표시한다.
+
+4. contradiction — 한 구절 안의 자기모순 표현 (예: "국적 세탁한 한국인")
+
+5. lock_conflict — 서로 다른 LOCK 사이에 동시에 지킬 수 없는 규칙
+   (예: "카메라는 주인공 동선에만 고정" vs "조력자가 단독으로 결정적 장치 작동")
+
+6. verdict_inconsistency — final_verdict와 다른 판정어(PASS 등), 이름 없는 점수,
+   Hook 5축 점수와 본질 5원칙 점수의 혼동, locked_hook_score와 Hook 5축 점수 불일치
+
+7. infrastructure_reality — 공공 시스템에 실제로 없는 기능을 부여
+   확인된 사실: 휴대전화 재난문자는 기지국 셀 방송 텍스트(위급·긴급 90자, 안전안내 157자)이며 영상 재생 불가.
+   그 밖의 시스템은 확신할 때만 적출한다.
+
+[작가 레퍼런스 추출]
+작가 답변 원장과 원본 아이디어에서 작가가 직접 언급한 작품명을 전부 뽑는다.
+locked_references에 없는 작품이 있으면 append 수정안을 낸다.
+append 값 형식: "제목 (연도) — 사실과 맞는 유사 축 1구절". 연도를 확신할 수 없으면 연도를 생략한다.
+
+[수정안 작성 규칙]
+- path는 시드 내부 경로다. 예: "locked_punch_scene.primary_emotion",
+  "locked_core_decisions[1].rule", "locked_references", "locked_references[2]".
+  임원 요약은 "executive_summary".
+- op는 "set"(기존 값 교체) 또는 "append"(배열 끝에 추가) 둘 중 하나.
+- value 타입은 원래 값의 타입과 같아야 한다 (문자열 자리에 문자열, 객체 자리에 객체).
+- 존재하지 않는 키를 새로 만들지 않는다.
+- 한 결함당 수정안 1개. 고칠 필요가 없는 결함(MINOR 확인 필요 등)은 fix를 null로 둔다.
+- 결함이 없으면 issues를 빈 배열로 둔다. 억지로 적출하지 않는다.
+
+[출력 JSON]
+{{
+  "issues": [
+    {{
+      "id": "I1",
+      "category": "writer_override | off_option | fact_error | contradiction | lock_conflict | verdict_inconsistency | infrastructure_reality",
+      "severity": "CRITICAL | MAJOR | MINOR",
+      "path": "결함 위치 경로",
+      "problem": "무엇이 잘못됐는가 1문장",
+      "evidence": "작가 답변·사실 근거 1문장",
+      "fix": {{"path": "수정 경로", "op": "set | append", "value": "수정 값"}}
+    }}
+  ],
+  "writer_references_detected": ["작가가 직접 언급한 작품명"],
+  "overall": "CLEAN | NEEDS_FIX",
+  "summary": "검사 결과 1~2문장"
+}}
 """ + SHARED_RULES

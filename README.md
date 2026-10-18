@@ -1,6 +1,6 @@
 # 💡 BLUE JEANS · Idea Engine
 
-**Version: v2.0** · Patch: v2.3 · Build: 2026-08-03 · Status: Production
+**Version: v2.0** · Patch: v2.3.3 · Build: 2026-10-18 · Status: Production
 
 > **모호한 아이디어 한 줄 → Creator Engine이 그대로 받아먹는 LOCKED 시드 패키지**
 >
@@ -9,6 +9,41 @@
 > ⚠️ **버전 확인 방법**: `main.py` 상단 `ENGINE_PATCH_LEVEL` / Streamlit 사이드바 Engine Info / 이 README 최상단 — 세 곳의 버전이 일치해야 정상이다. 불일치 시 최신 파일로 덮어쓸 것.
 
 > 📌 **이 엔진의 존재 이유**: 시나리오를 다 쓴 뒤에 "애초에 콘셉트가 틀렸다"를 발견하는 일을 막는다. 아이디어 단계에서 걸러내는 비용이 가장 싸다.
+
+---
+
+## v2.3.3 패치 (2026-10-18) — 작가 답변 우선 · LOCK 무결성 검사
+
+「구출」(ACTION+SOCIAL 영화) 시드 이슈 보고 9건 대응.
+
+### 근본 원인
+Stage 7(Opus)이 `stage_3_hook`(3-C 채점)만 받고, 3-A·3-A+·3-B 결과와 작가 답변을 **전혀 받지 못했다.**
+프롬프트에는 "3-A·3-B 발굴 결과를 그대로 가져와 LOCK"이라 적혀 있었으나 입력이 없어 Opus가 결말·Punch를 새로 지었다.
+진행 백업도 3-A·3-A+·3-B 하위 키를 저장하지 않아 복원 시 작가 답변이 사라졌다.
+
+### 변경
+| # | 이슈 | 조치 |
+|---|---|---|
+| 1 | 작가 답변 덮어쓰기 | Stage 7에 `foundation_data` · `hook_punch_data` · `writer_answers`(질문 원문 포함 원장) 전달 + 작가 답변 우선 규칙. 코드가 3-B 빌드 결과의 Hook·Punch를 시드로 직접 이식 |
+| 2 | 옵션 외 값 | H2·P2·P4·P5 답변을 코드가 판독해 옵션 값 또는 작가 자유 입력으로 강제. 무결성 수정안보다 우선 |
+| 3 | locked_source 판독 불가 | 매핑은 정상(값=출처 라벨)이었으나 작가 답변 항목이 engine으로 표기됨 → writer로 교정 + `locked_source_legend` 신설 |
+| 4 | 레퍼런스 사실 오류·누락 | 레퍼런스 사실 규칙(직업·소속, 흥행 수치 금지) + 작가 레퍼런스 보존(괄호 표기는 코드, 그 외는 무결성 검사) + Stage 5에 H4 답변 전달 |
+| 5 | 자기모순 문구 | Stage 7 자가 점검 규칙 + 무결성 검사 `contradiction` |
+| 6 | LOCK 간 충돌 | Stage 7 자가 점검 규칙 + 무결성 검사 `lock_conflict` |
+| 7 | 판정 불일치 | 판정어 GO/CONDITIONAL/NOGO 한정, 점수 이름 표기 의무, `locked_hook_score`를 3-C total_score로 코드 동기화, `meta.scores`에 두 척도 분리 기록 |
+| 8 | project_id 연도 | 코드가 생성일 연도로 정규화 (`GUCHUL_2026`) |
+| 9 | 공공 인프라 사실성 | 임시 규칙(재난문자 텍스트 전용) + 무결성 검사 `infrastructure_reality`. 정식 점검은 v2.4 |
+
+### LOCK 무결성 검사 (Stage 7 직후 · Sonnet · 자동 실행)
+적출 7종: `writer_override` · `off_option` · `fact_error` · `contradiction` · `lock_conflict` · `verdict_inconsistency` · `infrastructure_reality`.
+수정안은 경로 단위(`locked_core_decisions[1].rule` 등)로 나오며, 코드가 경로 존재·타입을 검증한 뒤 적용한다. 작가 답변 강제는 수정안 적용 뒤 다시 실행된다.
+레퍼런스 사실 검사는 모델 지식 기반이며 웹 검증이 아니다.
+
+### 신규 메타 (LOCKED 키 아님 — 24키 유지)
+`locked_source_legend` · `scores` · `writer_answers` · `writer_priority_log` · `guard_warnings` · `integrity_check`
+
+### 하위 호환성
+LOCKED 24키 구조 변경 없음. `locked_source` 값은 기존 3분류 유지. 진행 백업 스키마 `triage_progress_v1` 유지(키 추가만 — 구버전 백업도 복원 가능).
 
 ---
 
@@ -396,6 +431,7 @@ Creator Engine v2.7.0이 신설한 Reality Gate가 상류 LOCKED에서 사실 �
 | 신규 프롬프트 | `SYSTEM_REALITY_PRECHECK` — Creator `SYSTEM_REALITY_GATE`에서 Core Build 참조부만 교체. 적출 대상 5종 · 금지 5항 · severity 3단 · 오탐 회피 원칙은 문면 그대로 유지 |
 | 배치 | Stage 6 ↔ Stage 7 사이 (LOCKED 확정 직전). 3-C+ 와 동일한 선택 게이트 구조로 하류 스키마 동일 보장 |
 | 시드 반영 | `_idea_engine_meta.reality_precheck` 실값 기입 |
+| 공공 인프라 점검 (「구출」 제안) | 공공 시스템(재난문자·경계경보·112/119·CCTV 관제·주민등록·출입국 등)을 플롯 장치로 쓰는 시드는 해당 시스템의 실제 기능 범위를 점검 대상에 포함. v2.3.3 임시 규칙을 정식 팩으로 이관 |
 
 양측 판정 기준이 어긋나면 "Reality Gate CRITICAL 적출 0건" 목표 자체가 측정 불가능해지므로, 프롬프트 문면을 그대로 이식하는 것이 전제다.
 
@@ -448,6 +484,7 @@ Streamlit Cloud Secrets에 `ANTHROPIC_API_KEY` 필수. GitHub 푸시 시 1~2분 
 
 | 버전 | 날짜 | 변경 사항 |
 |---|---|---|
+| v2.3.3 | 2026-10-18 | 작가 답변 우선 · LOCK 무결성 검사 7종 · Stage 7 입력 누락 수정 · 백업 하위 키 보존 |
 | v2.3 | 2026-08-03 | 포맷 구조화 단일화 · 미지정 경로 · 인계 메타데이터 · `meta.patch` 하드코딩 버그 수정 |
 | v2.2 | 2026-08-03 | 로그라인 포맷 어휘 차단 · 직업 역할 확인 지침 |
 | v2.1 | 2026-07 | 3-C+ Hook 약점 보완 게이트 (객관식 · 선택 진입) |
