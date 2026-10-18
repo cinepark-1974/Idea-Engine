@@ -1,6 +1,6 @@
 # 💡 BLUE JEANS · Idea Engine
 
-**Version: v2.0** · Patch: v2.3.3 · Build: 2026-10-18 · Status: Production
+**Version: v2.0** · Patch: v2.3.4 · Build: 2026-10-18 · Status: Production
 
 > **모호한 아이디어 한 줄 → Creator Engine이 그대로 이어받는 LOCKED 시드 패키지**
 >
@@ -9,6 +9,30 @@
 > ⚠️ **버전 확인 방법**: `main.py` 상단 `ENGINE_PATCH_LEVEL` / Streamlit 사이드바 Engine Info / 이 README 최상단 — 세 곳의 버전이 일치해야 정상이다. 불일치 시 최신 파일로 덮어쓸 것.
 
 > 📌 **이 엔진의 존재 이유**: 시나리오를 다 쓴 뒤에 "애초에 콘셉트가 틀렸다"를 발견하는 일을 막는다. 아이디어 단계에서 걸러내는 비용이 가장 싸다.
+
+---
+
+## v2.3.4 패치 (2026-10-18) — 시드 개정 모드 · 원안 의도 보존 · 로그라인 3막
+
+「구출」 시드를 작가가 rev1~rev3로 수동 개정하며 드러난 8건 대응. LOCKED 24키 구조 변경 없음.
+
+| # | 항목 | 조치 |
+|---|---|---|
+| 1 | 시드 개정 모드 | 신규 모드 `REVISE` (홈·사이드바). 시드 JSON 업로드 → 변경 지시 → Opus가 연동 키 전체 수정안 → 항목별 승인 → 반영 → 무결성 재검사 → rev 번호 증가 출력. 결정된 의제는 `locked_core_decisions`로 흡수하고 목록에서 제거. `meta.revision` · `meta.writer_revision_note` 기록, 개정 키는 `locked_source=writer`. 작가가 개정한 경로는 무결성 자동 수정·이전 답변 강제에서 제외 |
+| 2 | 원안 의도 · 기준 작품 | Stage 2가 `origin_intent`(적대 세력·핵심 사건·주제·기준 작품·주인공) 추출 → `meta.origin_intent`. 무결성 검사 `intent_drift`. Stage 5와 무결성 검사가 기준 작품 핵심 엔진 3~4개를 유지/변형/탈락 표로 판정 + 표절 거리 경고 |
+| 3 | 로그라인 규칙 | 엔진형 1문장 + 피칭형 3문장(1막 사건 / 2막 반전 / 3막 주인공의 행동) 동시 출력 → `meta.pitch_logline`. 자기 규정 형용사 금지, ACTION은 신체 행동 동사로 마감, 앞에 없던 서수·모호한 대명사 금지, 공공 시스템 발령 권한 주체 확인 |
+| 4 | 3-A+ 재진입 버그 | 재실행 시 지우기 전에 Q&A를 `stage_3_answer_history`로 보관. 3-A+ 질문 생성·빌드, 3-B 질문 생성에 작가 답변 원장 전달. 이미 답한 주제는 "이전 답변 확인"으로 표시, 3-B 답변칸은 이전 답 미리 채움 |
+| 5 | 공통 규칙 이동 | 레퍼런스 사실 규칙 · 공공 인프라 규칙을 `SHARED_RULES`로 이동 (3-A·3-A+·3-B·Stage 5·Stage 7 전체 적용) |
+| 6 | 무결성 검사 확장 | 7종 → 12종: `intent_drift` · `actor_level`(비국가 세력의 국가 단위 표기) · `real_person_risk` · `archetype_saturation` · `unverified_figure`. 인프라 규칙에 군중 반응 사실성 추가 (1983년 2월 공습경보 당시 생필품 품절, 2023년 5월 서울 경계경보 오발령 당시 대피 정보 없는 문자·9분 지연·포털 접속 장애·책임 공방) |
+| 7 | 결핍/상실 이식 | 3-A Desire Engine에 `desire_origin`(결핍·상실·미정, 근거 없으면 미정). 미정이면 GREEN이어도 3-A+ 진입, R1로 우선 질문. 시드 `locked_empathy_anchor.desire_origin` 하위 필드 + `meta.character_core` |
+| 8 | 소규모 | 엔진 추정 수치는 "엔진 추정치(미검증)" 표기 의무 + 무표기 자동 경고. `title_kr` 출처는 Stage 1 제목과 같을 때만 writer, `meta.title_status=가제`. 사이드바 백업 버튼 툴팁이 본문 질문을 가리던 문제 → 캡션으로 교체 |
+
+### 확인된 사실 (프롬프트 반영분)
+- 민방위 경보 발령 권한은 중앙정부(행정안전부)와 시·도 모두에 있다. 2023년 5월 31일 서울 경계경보는 서울시가 발령했다.
+- 1983년 2월 25일 공습경보는 오전 10시 58분 수도권에 발령됐고, 라면·우유·밀가루가 동났다. (호외 발행은 확인되지 않아 제외)
+
+### Creator Engine 정합 메모
+신규 메타(`origin_intent` · `pitch_logline` · `character_core` · `benchmark_engine_tables` · `archetype_saturation` · `title_status` · `revision` · `writer_revision_note`)와 `locked_empathy_anchor.desire_origin` 하위 필드는 Creator Engine이 아직 읽지 않는다. 흡수하려면 Creator Engine 쪽 패치가 필요하다.
 
 ---
 
@@ -431,6 +455,7 @@ Creator Engine v2.7.0이 신설한 Reality Gate가 상류 LOCKED에서 사실 �
 | 신규 프롬프트 | `SYSTEM_REALITY_PRECHECK` — Creator `SYSTEM_REALITY_GATE`에서 Core Build 참조부만 교체. 적출 대상 5종 · 금지 5항 · severity 3단 · 오탐 회피 원칙은 문면 그대로 유지 |
 | 배치 | Stage 6 ↔ Stage 7 사이 (LOCKED 확정 직전). 3-C+ 와 동일한 선택 게이트 구조로 하류 스키마 동일 보장 |
 | 시드 반영 | `_idea_engine_meta.reality_precheck` 실값 기입 |
+| 군중 반응 사실성 (「구출」 rev3 제안) | v2.3.4 임시 규칙(경보 상황 군중 반응 실례)을 정식 팩으로 이관 |
 | 공공 인프라 점검 (「구출」 제안) | 공공 시스템(재난문자·경계경보·112/119·CCTV 관제·주민등록·출입국 등)을 플롯 장치로 쓰는 시드는 해당 시스템의 실제 기능 범위를 점검 대상에 포함. v2.3.3 임시 규칙을 정식 팩으로 이관 |
 
 양측 판정 기준이 어긋나면 "Reality Gate CRITICAL 적출 0건" 목표 자체가 측정 불가능해지므로, 프롬프트 문면을 그대로 이식하는 것이 전제다.
@@ -484,6 +509,7 @@ Streamlit Cloud Secrets에 `ANTHROPIC_API_KEY` 필수. GitHub 푸시 시 1~2분 
 
 | 버전 | 날짜 | 변경 사항 |
 |---|---|---|
+| v2.3.4 | 2026-10-18 | 시드 개정 모드 · 원안 의도 보존 · 로그라인 3막 · 3-A+ 재진입 수정 · 무결성 12종 · 결핍/상실 이식 |
 | v2.3.3 | 2026-10-18 | 작가 답변 우선 · LOCK 무결성 검사 7종 · Stage 7 입력 누락 수정 · 백업 하위 키 보존 |
 | v2.3 | 2026-08-03 | 포맷 구조화 단일화 · 미지정 경로 · 인계 메타데이터 · `meta.patch` 하드코딩 버그 수정 |
 | v2.2 | 2026-08-03 | 로그라인 포맷 어휘 차단 · 직업 역할 확인 지침 |

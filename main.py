@@ -42,7 +42,7 @@ import market_lens_pack as MLP
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
 ENGINE_BUILD_DATE = "2026-10-18"
-ENGINE_PATCH_LEVEL = "v2.3.3 (작가 답변 우선 · LOCK 무결성 검사) + v2.3.2 (HUNTER→TRIAGE 시드 폼 자동 입력) + v2.3.1 (HUNTER 입구 직접 진입 오류 수정) + v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
+ENGINE_PATCH_LEVEL = "v2.3.4 (시드 개정 모드 · 원안 의도 보존 · 로그라인 3막) + v2.3.3 (작가 답변 우선 · LOCK 무결성 검사) + v2.3.2 (HUNTER→TRIAGE 시드 폼 자동 입력) + v2.3.1 (HUNTER 입구 직접 진입 오류 수정) + v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
 
 
 def _hunter_classified_entry_id() -> str:
@@ -112,6 +112,8 @@ def reset_session():
         "stage_3_hook", "stage_4_format", "stage_5_reference",
         "stage_6_market", "stage_7_verdict", "selected_logline",
         "seed_loaded_from_hunter",
+        "stage_3_answer_history", "selected_pitch_logline",
+        "revision_doc", "revision_doc_name", "revision_plan", "revision_result",
     ]
     for k in keys_to_clear:
         if k in st.session_state:
@@ -132,6 +134,8 @@ def reset_triage_only():
         "stage_3_hook_punch_questions", "stage_3_hook_punch_answers", "stage_3_hook_punch_built",
         # 3-C+ Hook 약점 보완 (v2.1)
         "stage_3_cplus_suggestions", "stage_3_cplus_rescore_count",
+        # v2.3.4
+        "stage_3_answer_history", "selected_pitch_logline",
     ]
     for k in keys:
         if k in st.session_state:
@@ -194,6 +198,8 @@ PROGRESS_STAGE_KEYS = [
     "stage_3_reinforce_questions", "stage_3_reinforce_answers", "stage_3_reinforce_built",
     "stage_3_hook_punch_questions", "stage_3_hook_punch_answers", "stage_3_hook_punch_built",
     "stage_3_cplus_suggestions", "stage_3_cplus_rescore_count",
+    # v2.3.4 — 이전 회차 답변 이력 · 피칭형 로그라인
+    "stage_3_answer_history", "selected_pitch_logline",
 ]
 PROGRESS_SCHEMA = "triage_progress_v1"
 
@@ -342,7 +348,8 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v2.3 포맷 구조화(9열거값·확신도) · 인계 메타데이터</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.3.1 HUNTER 입구 직접 진입 오류 수정</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.3.2 HUNTER→TRIAGE 시드 폼 자동 입력</span><br>
-            <span style="color:#191970;font-weight:600;">+ v2.3.3 작가 답변 우선 · LOCK 무결성 검사 7종</span>
+            <span style="color:#191970;font-weight:600;">+ v2.3.3 작가 답변 우선 · LOCK 무결성 검사</span><br>
+            <span style="color:#191970;font-weight:600;">+ v2.3.4 시드 개정 모드 · 원안 의도 보존 · 로그라인 3막 · 무결성 12종</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -355,6 +362,7 @@ with st.sidebar:
         "HOME": "🏠 HOME",
         "HUNTER": "🎯 HUNTER (발굴)",
         "TRIAGE": "🔍 TRIAGE (진단)",
+        "REVISE": "✏ 시드 개정",
     }
     st.markdown(f"""
     <div style="padding:10px;background:#191970;border-radius:8px;font-family:'Pretendard',sans-serif;">
@@ -375,6 +383,9 @@ with st.sidebar:
         st.rerun()
     if st.button("🔍 TRIAGE 트랙", key="nav_triage", use_container_width=True):
         st.session_state["mode"] = "TRIAGE"
+        st.rerun()
+    if st.button("✏ 시드 개정", key="nav_revise", use_container_width=True):
+        st.session_state["mode"] = "REVISE"
         st.rerun()
 
     # ── HUNTER → TRIAGE 시드 전송 (시드 준비된 경우만 노출) ──
@@ -414,8 +425,9 @@ with st.sidebar:
             mime="application/json",
             key="sidebar_progress_save",
             use_container_width=True,
-            help="세션 휘발 시 복원용 백업입니다. Creator Engine 인계 시드가 아닙니다 — 최종 시드는 Stage 7 'LOCKED 시드 JSON 다운로드'에서 받으세요.",
         )
+        # v2.3.4 — 마우스 오버 툴팁이 본문 질문 위로 겹쳐 떠서 캡션으로 교체
+        st.caption("세션 복원용 백업입니다. Creator Engine 인계 시드는 Stage 7에서 받습니다.")
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
@@ -1333,7 +1345,7 @@ def normalize_locked_format(raw_ft: Any) -> Dict[str, Any]:
 #       결말·Punch를 새로 지어냈다 (「구출」 사례).
 # 대책: ① 작가 답변 원장을 Stage 7에 전달
 #       ② 엔진 코드가 작가 답변을 기계적으로 강제 (모델이 바꿔도 되돌린다)
-#       ③ Sonnet 무결성 검사 7종 + 경로 검증된 수정안 적용
+#       ③ Sonnet 무결성 검사 (v2.3.4부터 12종) + 경로 검증된 수정안 적용
 # ═══════════════════════════════════════════════════════════
 
 # 옵션 목록이 있는 질문 → (시드 키, 필드, [(작가 답변에서 찾을 말, 시드 값)])
@@ -1432,7 +1444,104 @@ def build_writer_answer_ledger(state: Dict[str, Any]) -> Dict[str, Any]:
         if qid not in seen and str(ans or "").strip():
             ledger["hook_punch_3b"].append({"q_id": qid, "principle": "", "question": "",
                                             "hint_options": [], "answer": str(ans).strip()})
+
+    # v2.3.4 — 이전 회차 답변 (3-A+·3-B 재실행 전에 보관한 것)
+    for row in (state.get("stage_3_answer_history") or []):
+        kind = row.get("kind")
+        bucket = "reinforce_3a_plus" if kind == "3a_plus" else "hook_punch_3b"
+        rec = {k: v for k, v in row.items() if k != "kind"}
+        rec["round"] = rec.get("round", "이전 회차")
+        dup = any(
+            r.get("answer") == rec.get("answer") and r.get("question", "") == rec.get("question", "")
+            for r in ledger[bucket]
+        )
+        if not dup:
+            ledger[bucket].append(rec)
     return ledger
+
+
+def archive_stage3_answers(state: Dict[str, Any], kinds: tuple) -> None:
+    """3-A+·3-B 재실행 전에 현재 회차 Q&A를 이력으로 보관 (v2.3.4).
+    재실행해도 작가가 이미 답한 내용이 하류(3-A+ 재질문·3-B·Stage 7)에 전달된다."""
+    hist = list(state.get("stage_3_answer_history") or [])
+    led = build_writer_answer_ledger({k: v for k, v in state.items() if k != "stage_3_answer_history"})
+    n_round = 1 + max([int(h.get("round_no", 0) or 0) for h in hist] or [0])
+    if "3a_plus" in kinds:
+        for r in led.get("reinforce_3a_plus", []):
+            hist.append({"kind": "3a_plus", "round_no": n_round, "round": f"{n_round}회차", **r})
+    if "3b" in kinds:
+        for r in led.get("hook_punch_3b", []):
+            hist.append({"kind": "3b", "round_no": n_round, "round": f"{n_round}회차", **r})
+    state["stage_3_answer_history"] = hist
+
+
+def previous_answer_for(state: Dict[str, Any], kind: str, qid: str) -> str:
+    """이전 회차에서 같은 질문 번호에 답한 가장 최근 답."""
+    ans = ""
+    for row in (state.get("stage_3_answer_history") or []):
+        if row.get("kind") == kind and row.get("q_id") == qid and str(row.get("answer", "")).strip():
+            ans = str(row["answer"]).strip()
+    return ans
+
+
+def get_origin_intent(state: Dict[str, Any]) -> Dict[str, Any]:
+    ll = state.get("stage_2_logline") or {}
+    oi = ll.get("origin_intent") if isinstance(ll, dict) else None
+    return oi if isinstance(oi, dict) else {}
+
+
+def get_benchmark_works(origin: Dict[str, Any]) -> list:
+    works = origin.get("reference_works") or []
+    return [str(w).strip() for w in works if str(w).strip()] if isinstance(works, list) else []
+
+
+def get_desire_origin(state: Dict[str, Any]) -> Dict[str, str]:
+    fd = state.get("stage_3_reinforce_built") or state.get("stage_3_foundation") or {}
+    p2 = fd.get("principle_2_desire_engine") if isinstance(fd, dict) else None
+    if not isinstance(p2, dict) or "desire_origin" not in p2:
+        return {}
+    val = str(p2.get("desire_origin", "") or "").strip()
+    if val not in ("결핍", "상실"):
+        val = "미정"
+    return {"desire_origin": val, "evidence": str(p2.get("desire_origin_evidence", "") or "")}
+
+
+def stage3_needs_reinforce(foundation) -> bool:
+    """3-A+ 진입 조건 (v2.3.4): GREEN 미달 또는 욕망의 근원(결핍/상실) 미정."""
+    if not _foundation_is_green(foundation):
+        return True
+    p2 = (foundation or {}).get("principle_2_desire_engine") or {}
+    return isinstance(p2, dict) and "desire_origin" in p2 and \
+        str(p2.get("desire_origin", "")).strip() not in ("결핍", "상실")
+
+
+_FIGURE_PAT = re.compile(r"\d[\d,.~]*\s*(억|만\s*명|만명|만\s*관객|%)|손익분기")
+
+
+def find_unlabeled_figures(vd: Dict[str, Any]) -> list:
+    """엔진 추정 수치가 '엔진 추정치(미검증)' 표기 없이 들어간 곳 (v2.3.4)."""
+    seed = vd.get("locked_seed_package") or {}
+    spots = []
+
+    def _scan(label, txt):
+        txt = str(txt or "")
+        for m in _FIGURE_PAT.finditer(txt):
+            ctx = txt[max(0, m.start() - 20): m.start()]
+            if "엔진 추정치" not in ctx:
+                spots.append(f"{label}: '{txt[max(0, m.start() - 12): m.end() + 6].strip()}'")
+                break
+
+    for i, d in enumerate(seed.get("locked_core_decisions") or []):
+        if isinstance(d, dict):
+            _scan(f"locked_core_decisions[{i}].rule", d.get("rule"))
+    mp = seed.get("locked_market_position") or {}
+    if isinstance(mp, dict):
+        for k in ("reasoning", "production_implications"):
+            _scan(f"locked_market_position.{k}", mp.get(k))
+    for i, r in enumerate(seed.get("locked_risks_to_address") or []):
+        _scan(f"locked_risks_to_address[{i}]", r)
+    _scan("executive_summary", vd.get("executive_summary"))
+    return spots
 
 
 def _ledger_answer(ledger: Dict[str, Any], qid: str) -> str:
@@ -1482,7 +1591,8 @@ def normalize_project_id(pid: str, title_en: str, year: int) -> str:
     return f"{base}_{year}"
 
 
-def apply_writer_priority(state: Dict[str, Any], vd: Dict[str, Any]) -> Dict[str, Any]:
+def apply_writer_priority(state: Dict[str, Any], vd: Dict[str, Any],
+                          protected: Optional[set] = None) -> Dict[str, Any]:
     """Stage 7 결과에 작가 답변을 기계적으로 강제한다. 여러 번 불러도 결과가 같다.
 
     - 최초 1회: 3-B 빌드 결과의 Hook·Punch를 시드로 그대로 옮김
@@ -1521,6 +1631,9 @@ def apply_writer_priority(state: Dict[str, Any], vd: Dict[str, Any]) -> Dict[str
 
     # ② 옵션 필드 강제 — 옵션 값 또는 작가 자유 입력만 허용
     for qid, (seed_key, field, rules) in OPTION_FIELD_RULES.items():
+        # 시드 개정 모드: 작가가 이번 개정으로 직접 바꾼 항목은 이전 답변으로 되돌리지 않는다
+        if protected and (seed_key in protected or f"{seed_key}.{field}" in protected):
+            continue
         ans = _ledger_answer(ledger, qid)
         if not ans:
             continue
@@ -1580,7 +1693,20 @@ def apply_writer_priority(state: Dict[str, Any], vd: Dict[str, Any]) -> Dict[str
         for m in re.finditer(r"Hook(?:\s*5축)?\s*(\d{1,2})\s*점", txt):
             if hs is not None and int(m.group(1)) != hs:
                 warns.append(f"{fld}: Hook 점수 {m.group(1)}점 표기 — Hook 5축 점수는 {hs}점")
+    for spot in find_unlabeled_figures(vd):
+        warns.append(f"엔진 추정 수치 무표기 — {spot}")
     vd["_guard_warnings"] = warns
+
+    # ⑦ 욕망의 근원(결핍/상실) — locked_empathy_anchor 하위 필드로 전달 (v2.3.4)
+    do = get_desire_origin(state)
+    if do:
+        ea = seed.get("locked_empathy_anchor")
+        if not isinstance(ea, dict):
+            ea = {}
+            seed["locked_empathy_anchor"] = ea
+        _record("locked_empathy_anchor.desire_origin", ea.get("desire_origin"), do["desire_origin"],
+                "3-A/3-A+ 욕망의 근원 판정 이식")
+        ea["desire_origin"] = do["desire_origin"]
 
     vd["_writer_ledger_snapshot"] = ledger
     return vd
@@ -1655,23 +1781,24 @@ def apply_fix(vd: Dict[str, Any], fix: Dict[str, Any]) -> tuple:
     return True, "set"
 
 
-def run_integrity_check(client, state: Dict[str, Any], vd: Dict[str, Any]) -> Dict[str, Any]:
+def run_integrity_check_core(client, *, title: str, vd: Dict[str, Any], ledger: Dict[str, Any],
+                             foundation_score: Any, origin_intent: Dict[str, Any]) -> Dict[str, Any]:
+    """무결성 검사 공통부 — TRIAGE Stage 7과 시드 개정 모드가 함께 쓴다 (v2.3.4)."""
     seed = vd.get("locked_seed_package") or {}
-    s1 = state.get("stage_1_input") or {}
-    foundation = state.get("stage_3_reinforce_built") or state.get("stage_3_foundation") or {}
-    ledger = build_writer_answer_ledger(state)
-    ledger_for_prompt = dict(ledger)
-    ledger_for_prompt["raw_idea"] = s1.get("raw_idea", "")
     det_log = {
         "writer_priority_log": vd.get("_writer_priority_log", []),
         "guard_warnings": vd.get("_guard_warnings", []),
     }
+    bench = get_benchmark_works(origin_intent)
     prompt_text = P.SEED_INTEGRITY_CHECK_PROMPT.format(
-        title=s1.get("title", ""),
+        title=title,
         verdict=vd.get("final_verdict", ""),
         hook_score=seed.get("locked_hook_score", ""),
-        foundation_score=foundation.get("foundation_total_score", "(3-A 미실행)"),
-        writer_answers=json.dumps(ledger_for_prompt, ensure_ascii=False, indent=2),
+        foundation_score=foundation_score,
+        writer_answers=json.dumps(ledger, ensure_ascii=False, indent=2),
+        origin_intent=json.dumps(origin_intent or {}, ensure_ascii=False, indent=2) if origin_intent
+        else "(원안 의도 추출 없음 — v2.3.4 이전 진행분)",
+        benchmark_works=" / ".join(bench) if bench else "(작가가 제시한 기준 작품 없음)",
         deterministic_log=json.dumps(det_log, ensure_ascii=False, indent=2),
         seed_json=json.dumps(seed, ensure_ascii=False, indent=2),
         executive_summary=vd.get("executive_summary", ""),
@@ -1682,6 +1809,18 @@ def run_integrity_check(client, state: Dict[str, Any], vd: Dict[str, Any]) -> Di
     result["_applied"] = False
     result["_checked_at"] = datetime.now().isoformat()
     return result
+
+
+def run_integrity_check(client, state: Dict[str, Any], vd: Dict[str, Any]) -> Dict[str, Any]:
+    s1 = state.get("stage_1_input") or {}
+    foundation = state.get("stage_3_reinforce_built") or state.get("stage_3_foundation") or {}
+    ledger = dict(build_writer_answer_ledger(state))
+    ledger["raw_idea"] = s1.get("raw_idea", "")
+    return run_integrity_check_core(
+        client, title=s1.get("title", ""), vd=vd, ledger=ledger,
+        foundation_score=foundation.get("foundation_total_score", "(3-A 미실행)"),
+        origin_intent=get_origin_intent(state),
+    )
 
 
 def apply_integrity_fixes(state: Dict[str, Any], vd: Dict[str, Any]) -> Dict[str, Any]:
@@ -1747,7 +1886,10 @@ def build_locked_source(state: Dict[str, Any], seed: Dict[str, Any]) -> Dict[str
     src: Dict[str, str] = {k: "engine" for k in seed.keys()}
 
     if "title_kr" in src:
-        src["title_kr"] = "writer"
+        # v2.3.4 — Stage 1 입력 제목과 시드 제목이 같을 때만 writer
+        _t_in = re.sub(r"\s+", "", str(s1.get("title", "") or ""))
+        _t_seed = re.sub(r"\s+", "", str(seed.get("title_kr", "") or ""))
+        src["title_kr"] = "writer" if _t_in and _t_in == _t_seed else "engine"
     if "locked_logline" in src:
         # Stage 2에서 엔진이 3안을 만들고 작가가 라디오로 채택
         src["locked_logline"] = "engine_writer_selected"
@@ -1789,6 +1931,46 @@ def _raw_idea_with_writer_refs(raw_idea: str) -> str:
         return raw_idea
     return (f"{raw_idea}\n\n[작가 제시 레퍼런스 — 매핑에 반드시 포함하고, "
             f"주인공 직업·소속을 사실대로 서술]: {h4}")
+
+
+def _pitch_logline_for_meta(state: Dict[str, Any], vd: Dict[str, Any]) -> list:
+    """피칭형 3문장 로그라인 — Stage 7 출력 우선, 없으면 Stage 2 채택본 (v2.3.4)."""
+    pl = vd.get("pitch_logline")
+    if isinstance(pl, list) and any(str(x).strip() for x in pl):
+        return [str(x).strip() for x in pl]
+    pl = state.get("selected_pitch_logline")
+    return [str(x).strip() for x in pl] if isinstance(pl, list) else []
+
+
+def _benchmark_tables_for_meta(state: Dict[str, Any], vd: Dict[str, Any]) -> list:
+    """기준 작품 핵심 엔진 표 — 무결성 검사 재판정본 우선, 없으면 Stage 5 판정본 (v2.3.4)."""
+    ic = vd.get("_integrity_check") or {}
+    if isinstance(ic, dict) and ic.get("benchmark_engine_tables"):
+        return ic["benchmark_engine_tables"]
+    return (state.get("stage_5_reference") or {}).get("benchmark_engine_tables", []) or []
+
+
+def render_benchmark_tables(tables: list, title: str) -> None:
+    """기준 작품 핵심 엔진 유지/변형/탈락 표 (v2.3.4)."""
+    if not tables:
+        return
+    st.markdown(f"**{title}**")
+    color = {"유지": "#2E7D32", "변형": "#F9A825", "탈락": "#C62828"}
+    for t in tables:
+        rows = "".join(
+            f"<tr><td style='padding:4px 8px'>{e.get('engine', '')}</td>"
+            f"<td style='padding:4px 8px;font-weight:700;color:{color.get(e.get('status', ''), '#191970')}'>"
+            f"{e.get('status', '')}</td><td style='padding:4px 8px'>{e.get('seed_counterpart', '')}</td></tr>"
+            for e in (t.get("engines") or [])
+        )
+        st.markdown(
+            f"<div style='margin:6px 0'><b>{t.get('work', '')}</b>"
+            f"<table style='width:100%;border-collapse:collapse;font-size:.88rem'>"
+            f"<tr style='background:#F0F2FF'><th style='text-align:left;padding:4px 8px'>핵심 엔진</th>"
+            f"<th style='text-align:left;padding:4px 8px'>판정</th><th style='text-align:left;padding:4px 8px'>시드 대응</th></tr>"
+            f"{rows}</table></div>", unsafe_allow_html=True)
+        if t.get("plagiarism_distance_warning"):
+            st.warning(f"표절 거리 경고 — {t.get('warning_reason', '')}")
 
 
 LOCKED_SOURCE_LEGEND = {
@@ -1882,6 +2064,15 @@ def build_seed_json(state: Dict[str, Any]) -> str:
             "writer_priority_log": vd.get("_writer_priority_log", []),
             "guard_warnings": vd.get("_guard_warnings", []),
             "integrity_check": integrity_meta(vd),
+            # ─── v2.3.4 신규 메타 ───
+            "title_status": "가제",
+            "origin_intent": get_origin_intent(state),
+            "pitch_logline": _pitch_logline_for_meta(state, vd),
+            "character_core": get_desire_origin(state),
+            "benchmark_engine_tables": _benchmark_tables_for_meta(state, vd),
+            "archetype_saturation": (state.get("stage_5_reference") or {}).get("archetype_saturation", {}),
+            "revision": 0,
+            "writer_revision_note": [],
         },
         "title": seed.get("title_kr", ""),
         "raw_idea": seed.get("locked_logline", ""),
@@ -2090,9 +2281,24 @@ def page_stage_2():
                 st.rerun()
     else:
         ll = st.session_state["stage_2_logline"]
+        oi = ll.get("origin_intent") or {}
+        if oi:
+            with st.expander("원안 의도 (원본 아이디어에서 추출 — 하류 단계가 이탈 여부를 점검)", expanded=False):
+                for lbl, key in (("적대 세력", "antagonist_forces"), ("핵심 사건", "core_events"),
+                                 ("주제", "themes"), ("기준 작품", "reference_works")):
+                    vals = oi.get(key) or []
+                    if vals:
+                        st.markdown(f"**{lbl}**: " + " / ".join(str(x) for x in vals))
+                if oi.get("protagonist"):
+                    st.markdown(f"**주인공**: {oi['protagonist']}")
         for v in ll.get("logline_variants", []):
             st.markdown(f"**[{v['variant']}안 — {v['label']}]**")
-            st.markdown(f"<div class='callout'>{v['logline']}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='callout'><span style='color:#6B6B7B;font-size:.8rem'>엔진형</span><br>{v['logline']}</div>", unsafe_allow_html=True)
+            _pl = v.get("pitch_logline") or []
+            if isinstance(_pl, list) and _pl:
+                _acts = ["1막", "2막", "3막"]
+                _lines = "<br>".join(f"<b>{_acts[i] if i < 3 else ''}</b> {x}" for i, x in enumerate(_pl))
+                st.markdown(f"<div class='callout' style='background:#FFFEF5'><span style='color:#6B6B7B;font-size:.8rem'>피칭형</span><br>{_lines}</div>", unsafe_allow_html=True)
             cs, cw = st.columns(2)
             with cs:
                 st.caption(f"✓ 강점: {v['strength']}")
@@ -2119,6 +2325,10 @@ def page_stage_2():
             label_visibility="collapsed"
         )
         st.session_state["selected_logline"] = options[choice]
+        # v2.3.4 — 채택안의 피칭형 3문장도 함께 보관
+        _chosen = next((v for v in ll.get("logline_variants", [])
+                        if f"{v['variant']}안 - {v['label']}" == choice), {})
+        st.session_state["selected_pitch_logline"] = _chosen.get("pitch_logline") or []
         
         cb, cr, cn = st.columns([1, 1, 2])
         with cb:
@@ -2183,7 +2393,7 @@ def page_stage_3():
     # 3-A 진단이 끝났고 GREEN이 아니면 보강 단계가 필요하다 (v1.5)
     needs_reinforce = False
     if foundation_done:
-        needs_reinforce = not _foundation_is_green(st.session_state["stage_3_foundation"])
+        needs_reinforce = stage3_needs_reinforce(st.session_state["stage_3_foundation"])
 
     if needs_reinforce:
         cstep_a, cstep_ap, cstep_b, cstep_c = st.columns(4)
@@ -2262,7 +2472,7 @@ def page_stage_3():
     # ════════════════════════════════════════════════════════
     # 3-A+ : 5원칙 보강 발굴 (v1.5 — GREEN이 아닐 때만)
     # ════════════════════════════════════════════════════════
-    if not _foundation_is_green(foundation):
+    if stage3_needs_reinforce(foundation):
         reinforce_built = st.session_state.get("stage_3_reinforce_built")
 
         # 보강이 아직 완료되지 않았으면 보강 단계를 진행하고 게이트한다
@@ -2271,12 +2481,19 @@ def page_stage_3():
             st.markdown("### ◆ 3-A+ · 5원칙 보강 발굴")
             verdict = foundation.get("foundation_verdict", "")
             weakest = foundation.get("weakest_principle", "")
-            st.markdown(
-                '<div class="callout">'
-                f'본질 진단이 <b>{verdict}</b>로, GREEN(40점) 기준에 미치지 못했습니다. '
-                f'가장 약한 지점(<b>{weakest}</b>)을 집중 보강한 뒤 Hook & Punch 발굴로 넘어갑니다. '
-                'Hook은 단단한 본질 위에서만 작동합니다.'
-                '</div>', unsafe_allow_html=True)
+            if _foundation_is_green(foundation):
+                st.markdown(
+                    '<div class="callout">'
+                    f'본질 진단은 <b>{verdict}</b>이지만, 주인공 욕망의 근원(결핍 / 상실)이 정해지지 않았습니다. '
+                    '이 판정이 주인공 설계와 결말의 출발점이므로 먼저 확정한 뒤 Hook & Punch 발굴로 넘어갑니다.'
+                    '</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    '<div class="callout">'
+                    f'본질 진단이 <b>{verdict}</b>로, GREEN(40점) 기준에 미치지 못했습니다. '
+                    f'가장 약한 지점(<b>{weakest}</b>)을 집중 보강한 뒤 Hook & Punch 발굴로 넘어갑니다. '
+                    'Hook은 단단한 본질 위에서만 작동합니다.'
+                    '</div>', unsafe_allow_html=True)
 
             # 보강 질문지 생성 (한 번만)
             rf_questions = st.session_state.get("stage_3_reinforce_questions")
@@ -2291,6 +2508,9 @@ def page_stage_3():
                             title=inp["title"], genre=inp["genre"], logline=logline,
                             raw_idea=inp["raw_idea"],
                             foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                            previous_answers=json.dumps(
+                                build_writer_answer_ledger(dict(st.session_state)),
+                                ensure_ascii=False, indent=2),
                         )
                         result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
                         if result.get("_parse_error"):
@@ -2308,6 +2528,14 @@ def page_stage_3():
                 st.markdown(f"*{rf_questions['echo_back']}*")
             if rf_questions.get("reinforce_intro"):
                 st.caption(rf_questions["reinforce_intro"])
+            _confirmed = rf_questions.get("confirmed_previous") or []
+            if _confirmed:
+                st.markdown("**이전 답변 확인** — 아래 내용은 다시 묻지 않고 그대로 반영합니다.")
+                for c in _confirmed:
+                    st.markdown(
+                        f'<div class="callout" style="background:#F0F2FF">'
+                        f'<b>{c.get("topic", "")}</b> · {c.get("previous_answer_summary", "")}</div>',
+                        unsafe_allow_html=True)
 
             rf_answers = {}
             for q in rf_questions.get("reinforce_questions", []):
@@ -2333,6 +2561,9 @@ def page_stage_3():
                             raw_idea=inp["raw_idea"],
                             foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
                             reinforce_answers=json.dumps(rf_answers, ensure_ascii=False, indent=2),
+                            previous_answers=json.dumps(
+                                {k: v for k, v in build_writer_answer_ledger(dict(st.session_state)).items()},
+                                ensure_ascii=False, indent=2),
                         )
                         result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
                         if result.get("_parse_error"):
@@ -2380,6 +2611,9 @@ def page_stage_3():
                     prompt_text = P.STAGE_3B_HOOK_PUNCH_PROMPT.format(
                         title=inp["title"], logline=logline, raw_idea=inp["raw_idea"],
                         foundation_result=json.dumps(foundation, ensure_ascii=False, indent=2),
+                        writer_answers=json.dumps(
+                            build_writer_answer_ledger(dict(st.session_state)),
+                            ensure_ascii=False, indent=2),
                     )
                     result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
                     if result.get("_parse_error"):
@@ -2422,6 +2656,11 @@ def page_stage_3():
             hints_q = q.get("hint_options", []) or []
             if hints_q:
                 st.caption("보조 옵션: " + " · ".join(hints_q))
+            _prev = previous_answer_for(st.session_state, "3b", qid)
+            if _prev and f"s3b_{qid}" not in st.session_state:
+                st.session_state[f"s3b_{qid}"] = _prev
+            if _prev:
+                st.caption("이전 답변이 채워져 있습니다 — 확인 후 그대로 두거나 고쳐 주세요.")
             answer = st.text_area(
                 f"답변 {qid}", key=f"s3b_{qid}", height=70,
                 label_visibility="collapsed",
@@ -2445,6 +2684,11 @@ def page_stage_3():
             hints_q = q.get("hint_options", []) or []
             if hints_q:
                 st.caption("보조 옵션: " + " · ".join(hints_q))
+            _prev = previous_answer_for(st.session_state, "3b", qid)
+            if _prev and f"s3b_{qid}" not in st.session_state:
+                st.session_state[f"s3b_{qid}"] = _prev
+            if _prev:
+                st.caption("이전 답변이 채워져 있습니다 — 확인 후 그대로 두거나 고쳐 주세요.")
             answer = st.text_area(
                 f"답변 {qid}", key=f"s3b_{qid}", height=70,
                 label_visibility="collapsed",
@@ -2576,6 +2820,9 @@ def page_stage_3():
         cr_a, cr_ap, cr_b = st.columns(3)
         with cr_a:
             if st.button("3-A Story Core 5원칙 재실행", key="rerun_3a"):
+                archive_stage3_answers(st.session_state, ("3a_plus", "3b"))
+                for qk in [k for k in list(st.session_state.keys()) if str(k).startswith(("s3ap_", "s3b_"))]:
+                    del st.session_state[qk]
                 for k in ["stage_3_foundation",
                           "stage_3_reinforce_questions", "stage_3_reinforce_answers", "stage_3_reinforce_built",
                           "stage_3_hook_punch_questions",
@@ -2584,6 +2831,9 @@ def page_stage_3():
                 st.rerun()
         with cr_ap:
             if st.button("3-A+ 보강 재실행", key="rerun_3ap"):
+                archive_stage3_answers(st.session_state, ("3a_plus", "3b"))
+                for qk in [k for k in list(st.session_state.keys()) if str(k).startswith(("s3ap_", "s3b_"))]:
+                    del st.session_state[qk]
                 for k in ["stage_3_reinforce_questions", "stage_3_reinforce_answers",
                           "stage_3_reinforce_built",
                           "stage_3_hook_punch_questions", "stage_3_hook_punch_answers",
@@ -2592,6 +2842,9 @@ def page_stage_3():
                 st.rerun()
         with cr_b:
             if st.button("3-B Hook&Punch 재실행", key="rerun_3b"):
+                archive_stage3_answers(st.session_state, ("3b",))
+                for qk in [k for k in list(st.session_state.keys()) if str(k).startswith("s3b_")]:
+                    del st.session_state[qk]
                 for k in ["stage_3_hook_punch_questions", "stage_3_hook_punch_answers",
                           "stage_3_hook_punch_built", "stage_3_hook"]:
                     st.session_state[k] = None
@@ -3154,6 +3407,8 @@ def page_stage_5():
                     target_market=inp.get("target_market", ""),
                     raw_idea=_raw_idea_with_writer_refs(inp["raw_idea"]),
                     market_lens=market_lens_text,
+                    benchmark_works=(" / ".join(get_benchmark_works(get_origin_intent(dict(st.session_state))))
+                                     or "(작가가 제시한 기준 작품 없음)"),
                 )
                 result = call_claude(client, prompt_text, ANTHROPIC_MODEL_SONNET)
                 if result.get("_parse_error"):
@@ -3181,6 +3436,15 @@ def page_stage_5():
         
         st.markdown("**투자자 미팅용 답변**")
         st.markdown(f'> {rf.get("investor_pitch_answer", "")}')
+
+        render_benchmark_tables(rf.get("benchmark_engine_tables") or [], "기준 작품 핵심 엔진 (원안 기준작 대비)")
+        arc = rf.get("archetype_saturation") or {}
+        if arc:
+            lvl = arc.get("saturation_level", "")
+            msg = (f"**주인공 원형**: {arc.get('protagonist_archetype', '')} · 포화도 **{lvl}**  \n"
+                   f"같은 원형: {' / '.join(arc.get('comparable_works') or [])}  \n"
+                   f"차별화 방향: {arc.get('differentiation_direction', '')}")
+            (st.warning if lvl == "높음" else st.info)(msg)
         
         st.markdown("---")
         cb, cr, cn = st.columns([1, 1, 2])
@@ -3378,6 +3642,10 @@ def page_stage_7():
                     writer_answers=json.dumps(
                         build_writer_answer_ledger(dict(st.session_state)),
                         ensure_ascii=False, indent=2),
+                    origin_intent=(json.dumps(get_origin_intent(dict(st.session_state)), ensure_ascii=False, indent=2)
+                                   or "{}"),
+                    pitch_logline=("\n".join(st.session_state.get("selected_pitch_logline") or [])
+                                   or "(Stage 2 피칭형 없음 — 새로 작성)"),
                 )
                 result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
                 if result.get("_parse_error"):
@@ -3466,6 +3734,9 @@ def page_stage_7():
             "fact_error": "레퍼런스 사실 오류", "contradiction": "자기모순 표현",
             "lock_conflict": "LOCK 간 충돌", "verdict_inconsistency": "판정·점수 불일치",
             "infrastructure_reality": "공공 인프라 기능 범위",
+            "intent_drift": "원안 의도 이탈", "actor_level": "행위 주체 수준",
+            "real_person_risk": "실존 인물 식별 위험", "archetype_saturation": "주인공 원형 과포화",
+            "unverified_figure": "엔진 추정 수치",
         }
         if not ic or ic.get("_error"):
             if ic and ic.get("_error"):
@@ -3497,6 +3768,7 @@ def page_stage_7():
                         f'위치: <code>{i.get("path", "")}</code><br>'
                         f'{i.get("problem", "")}<br><span style="color:#6B6B7B">근거: {i.get("evidence", "")}</span>'
                         f'{fix_txt}</div>', unsafe_allow_html=True)
+            render_benchmark_tables(ic.get("benchmark_engine_tables") or [], "기준 작품 핵심 엔진 (현재 시드 기준 재판정)")
             refs_det = ic.get("writer_references_detected", []) or []
             if refs_det:
                 st.caption("작가 제시 레퍼런스 감지: " + " · ".join(str(r) for r in refs_det))
@@ -3964,6 +4236,18 @@ def page_home():
         if st.button("🔍 TRIAGE 트랙 시작", key="home_to_triage", use_container_width=True):
             st.session_state["mode"] = "TRIAGE"
             st.rerun()
+
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="border:2px dashed #E2E2E0;border-radius:14px;padding:18px 24px;background:#fff;">
+        <span style="display:inline-block;background:#F0F2FF;color:#191970;font-size:.72rem;font-weight:700;padding:4px 10px;border-radius:999px;letter-spacing:.05em;margin-right:10px;">REVISE · 개정</span>
+        <b style="color:#191970">확정 시드를 고쳐야 할 때</b>
+        <span style="color:#6B6B7A;font-size:.9rem"> — 시드 JSON을 올리고 변경 지시를 쓰면, 연동된 키 전체에 수정안을 내고 rev 번호를 올려 다시 출력합니다.</span>
+    </div>
+    """, unsafe_allow_html=True)
+    if st.button("✏ 시드 개정 시작", key="home_to_revise", use_container_width=True):
+        st.session_state["mode"] = "REVISE"
+        st.rerun()
 
     st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
     st.markdown(
@@ -5156,12 +5440,424 @@ def _hunter_entry_5_fact():
 
 
 # ═══════════════════════════════════════════════════════════
+# v2.3.4 — 시드 개정 모드 (SEED REVISION)
+# ─────────────────────────────────────────────────────────────
+# 확정 시드 JSON 업로드 → 작가 변경 지시 → 영향 지점·수정안 제시(Opus)
+# → 작가가 항목별 승인 → 반영 → LOCK 무결성 재검사 → rev 번호 증가 재출력
+# ═══════════════════════════════════════════════════════════
+
+def _walk_to_parent(root: Any, tokens: list) -> tuple:
+    """(부모, 마지막 토큰, 오류). 마지막 토큰 직전까지 내려간다."""
+    parent = root
+    for t in tokens[:-1]:
+        if isinstance(t, int):
+            if not isinstance(parent, list) or t >= len(parent):
+                return None, None, "배열 범위 밖"
+        elif not isinstance(parent, dict) or t not in parent:
+            return None, None, "존재하지 않는 키"
+        parent = parent[t]
+    return parent, tokens[-1], ""
+
+
+def doc_apply_op(doc: Dict[str, Any], path: str, op: str, value: Any) -> tuple:
+    """시드 문서 전체 기준 경로 연산. (성공, 사유)."""
+    tokens = _parse_path(path)
+    if not tokens or op not in ("set", "append", "remove"):
+        return False, "경로·연산 형식 오류"
+    if not isinstance(tokens[0], str) or tokens[0] not in doc:
+        return False, "존재하지 않는 최상위 키"
+    parent, last, err = _walk_to_parent(doc, tokens)
+    if err:
+        return False, err
+    if isinstance(last, int):
+        if not isinstance(parent, list) or last >= len(parent):
+            return False, "배열 범위 밖"
+    elif not isinstance(parent, dict) or last not in parent:
+        return False, "존재하지 않는 키"
+    current = parent[last]
+    if op == "remove":
+        if not isinstance(last, int):
+            return False, "remove는 배열 원소만 가능"
+        parent.pop(last)
+        return True, "remove"
+    if op == "append":
+        if not isinstance(current, list):
+            return False, "배열이 아닌 곳에 append"
+        if current and type(current[0]) is not type(value):
+            return False, "배열 원소 타입 불일치"
+        current.append(value)
+        return True, "append"
+    if current is not None and type(current) is not type(value):
+        if not (isinstance(current, (int, float)) and isinstance(value, (int, float))):
+            return False, "값 타입 불일치"
+    parent[last] = value
+    return True, "set"
+
+
+def detect_revision_number(doc: Dict[str, Any], filename: str = "") -> int:
+    meta = doc.get("_idea_engine_meta") or {}
+    try:
+        n = int(meta.get("revision", 0) or 0)
+    except (TypeError, ValueError):
+        n = 0
+    m = re.search(r"_rev(\d+)", filename or "")
+    if m:
+        n = max(n, int(m.group(1)))
+    return n
+
+
+def _locked_key_of(path: str) -> str:
+    """'locked_seed.locked_theme.surface' → 'locked_theme' / 최상위 'raw_idea' → ''"""
+    toks = _parse_path(path) or []
+    if len(toks) >= 2 and toks[0] == "locked_seed" and isinstance(toks[1], str):
+        return toks[1]
+    return ""
+
+
+def _norm_rev_path(path: str) -> str:
+    """개정 경로 정규화 — 'locked_seed.' 접두사 제거 (무결성 수정안 경로와 같은 기준)."""
+    p = str(path or "").strip()
+    return p[len("locked_seed."):] if p.startswith("locked_seed.") else p
+
+
+def _is_protected(fix_path: str, protected: set) -> bool:
+    fp = _norm_rev_path(fix_path)
+    for p in protected:
+        if fp == p or fp.startswith(p + ".") or fp.startswith(p + "[") \
+                or p.startswith(fp + ".") or p.startswith(fp + "["):
+            return True
+    return False
+
+
+def build_revision_plan(client, doc: Dict[str, Any], instruction: str) -> Dict[str, Any]:
+    meta = doc.get("_idea_engine_meta") or {}
+    slim = {k: v for k, v in doc.items() if k != "_idea_engine_meta"}
+    prompt_text = P.SEED_REVISION_PLAN_PROMPT.format(
+        revision_instruction=instruction.strip(),
+        revision_history=json.dumps(meta.get("writer_revision_note", []) or [], ensure_ascii=False, indent=2),
+        origin_intent=json.dumps(meta.get("origin_intent", {}) or {}, ensure_ascii=False, indent=2),
+        seed_json=json.dumps(slim, ensure_ascii=False, indent=2),
+    )
+    result = call_claude(client, prompt_text, ANTHROPIC_MODEL_OPUS)
+    if result.get("_parse_error"):
+        return {"_error": "개정 분석 응답 파싱 실패", "_raw": result.get("_raw", "")[:2000]}
+    return result
+
+
+def apply_revision_plan(doc: Dict[str, Any], plan: Dict[str, Any], approved_ids: set,
+                        instruction: str, prev_rev: int) -> tuple:
+    """승인된 수정안만 반영. (새 문서, 적용 내역, 거부 내역, 개정된 시드 필드 집합)."""
+    import copy as _copy
+    new = _copy.deepcopy(doc)
+    old_logline = (doc.get("locked_seed") or {}).get("locked_logline", "")
+    changes = [c for c in (plan.get("changes") or []) if c.get("id") in approved_ids]
+    non_remove = [c for c in changes if c.get("op") != "remove"]
+
+    def _remove_key(c):
+        toks = _parse_path(c.get("path", "")) or []
+        idx = toks[-1] if toks and isinstance(toks[-1], int) else -1
+        return (str(toks[:-1]), -idx)
+
+    removes = sorted([c for c in changes if c.get("op") == "remove"], key=_remove_key)
+    applied, rejected, touched = [], [], set()
+    set_paths, appended = set(), []     # 보호 대상: 교체한 경로 + 새로 추가한 원소
+    for c in non_remove + removes:
+        ok, why = doc_apply_op(new, c.get("path", ""), c.get("op", ""), c.get("value"))
+        rec = {"id": c.get("id"), "path": c.get("path"), "op": c.get("op"), "result": why}
+        (applied if ok else rejected).append(rec)
+        if ok:
+            touched.add(c.get("path", ""))
+            if c.get("op") == "set":
+                set_paths.add(c.get("path", ""))
+            elif c.get("op") == "append":
+                toks = _parse_path(c.get("path", ""))
+                parent, last, _e = _walk_to_parent(new, toks)
+                lst = parent[last]
+                appended.append((c.get("path", ""), lst, lst[-1]))
+
+    seed = new.get("locked_seed") or {}
+    # 최상위 미러 동기화 (Creator Engine 입력 필드)
+    if "raw_idea" not in {p.split("[")[0] for p in touched} and new.get("raw_idea") == old_logline:
+        new["raw_idea"] = seed.get("locked_logline", new.get("raw_idea", ""))
+    new["title"] = seed.get("title_kr", new.get("title", ""))
+    if isinstance(seed.get("locked_genre"), dict):
+        new["genre"] = seed["locked_genre"].get("primary", new.get("genre", ""))
+    if isinstance(seed.get("locked_format"), dict):
+        new["format"] = seed["locked_format"].get("primary", new.get("format", ""))
+    if isinstance(seed.get("locked_target"), dict):
+        new["target_market"] = seed["locked_target"].get("domestic", new.get("target_market", ""))
+
+    # 메타 — rev 번호 · 개정 이력 · 출처
+    meta = new.setdefault("_idea_engine_meta", {})
+    rev = prev_rev + 1
+    changed_keys = sorted({_locked_key_of(p) for p in touched if _locked_key_of(p)})
+    top_fields = sorted({p.split("[")[0].split(".")[0] for p in touched if not p.startswith("locked_seed")})
+    meta["revision"] = rev
+    meta["revised_at"] = datetime.now().isoformat()
+    meta["revised_by_engine"] = f"{ENGINE_VERSION} · {ENGINE_PATCH_LEVEL.split(' + ')[0]}"
+    notes = list(meta.get("writer_revision_note") or [])
+    notes.append({
+        "revision": rev,
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "instruction": instruction.strip(),
+        "changed_locked_keys": changed_keys,
+        "changed_top_fields": top_fields,
+        "absorbed_questions": plan.get("absorbed_questions", []) or [],
+        "applied_changes": len(applied),
+    })
+    meta["writer_revision_note"] = notes
+    src = meta.get("locked_source")
+    if isinstance(src, dict):
+        for k in changed_keys:
+            src[k] = "writer"
+    meta["project_id"] = seed.get("project_id", meta.get("project_id", ""))
+    protected = {_norm_rev_path(p) for p in set_paths}
+    for path, lst, obj in appended:          # remove로 순서가 바뀌어도 원소 자체로 위치를 찾는다
+        idx = next((i for i, x in enumerate(lst) if x is obj), None)
+        if idx is not None:
+            protected.add(f"{_norm_rev_path(path)}[{idx}]")
+    return new, applied, rejected, protected
+
+
+def _revision_vd(doc: Dict[str, Any]) -> Dict[str, Any]:
+    meta = doc.get("_idea_engine_meta") or {}
+    return {
+        "final_verdict": meta.get("verdict", ""),
+        "locked_seed_package": doc.get("locked_seed") or {},
+        "executive_summary": doc.get("executive_summary", ""),
+        "_writer_priority_applied": True,   # 3-B 이식은 최초 생성 때만
+        "_generated_year": int(str(meta.get("generated_at", ""))[:4] or datetime.now().year)
+        if str(meta.get("generated_at", ""))[:4].isdigit() else datetime.now().year,
+    }
+
+
+def _revision_pseudo_state(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """메타의 작가 답변 원장으로 엔진 강제 규칙을 다시 돌리기 위한 최소 상태."""
+    meta = doc.get("_idea_engine_meta") or {}
+    wa = meta.get("writer_answers") or {}
+    return {
+        "stage_1_input": {"title": doc.get("title", ""), "raw_idea": doc.get("raw_idea", "")},
+        "stage_3_hook_punch_answers": {r.get("q_id"): r.get("answer", "")
+                                       for r in (wa.get("hook_punch_3b") or []) if r.get("q_id")},
+        "stage_3_reinforce_answers": {r.get("q_id"): r.get("answer", "")
+                                      for r in (wa.get("reinforce_3a_plus") or []) if r.get("q_id")},
+    }
+
+
+def revision_guard_and_check(client, doc: Dict[str, Any], protected: set) -> Dict[str, Any]:
+    """개정본에 엔진 강제 규칙 재적용 + 무결성 검사. 결과는 doc 메타에 기록."""
+    vd = _revision_vd(doc)
+    apply_writer_priority(_revision_pseudo_state(doc), vd, protected=protected)
+    doc["executive_summary"] = vd.get("executive_summary", doc.get("executive_summary", ""))
+    meta = doc.setdefault("_idea_engine_meta", {})
+    ledger = dict(meta.get("writer_answers") or {})
+    ledger["seed_revisions"] = meta.get("writer_revision_note", [])
+    ledger["raw_idea"] = doc.get("raw_idea", "")
+    ic = run_integrity_check_core(
+        client, title=doc.get("title", ""), vd=vd, ledger=ledger,
+        foundation_score=(meta.get("scores") or {}).get("foundation_5principle_score", ""),
+        origin_intent=meta.get("origin_intent") or {},
+    )
+    vd["_integrity_check"] = ic
+    meta["guard_warnings"] = vd.get("_guard_warnings", [])
+    meta["writer_priority_log"] = (meta.get("writer_priority_log") or []) + vd.get("_writer_priority_log", [])
+    meta["integrity_check"] = integrity_meta(vd)
+    if ic.get("benchmark_engine_tables"):
+        meta["benchmark_engine_tables"] = ic["benchmark_engine_tables"]
+    return vd
+
+
+def apply_revision_integrity_fixes(doc: Dict[str, Any], vd: Dict[str, Any], protected: set) -> Dict[str, Any]:
+    """무결성 수정안 적용 — 작가가 이번 개정에서 바꾼 항목은 자동 수정에서 제외."""
+    ic = vd.get("_integrity_check") or {}
+    applied, rejected = [], []
+    for iss in (ic.get("issues") or [])[:30]:
+        fix = iss.get("fix")
+        if not fix:
+            continue
+        if _is_protected(str(fix.get("path", "")), protected):
+            rejected.append({"id": iss.get("id"), "path": fix.get("path"), "result": "작가 개정 항목 — 자동 수정 제외"})
+            continue
+        ok, why = apply_fix(vd, fix)
+        (applied if ok else rejected).append({"id": iss.get("id"), "path": fix.get("path"), "result": why})
+    apply_writer_priority(_revision_pseudo_state(doc), vd, protected=protected)
+    doc["executive_summary"] = vd.get("executive_summary", doc.get("executive_summary", ""))
+    ic["_applied"] = True
+    ic["_applied_fixes"] = applied
+    ic["_rejected_fixes"] = rejected
+    vd["_integrity_check"] = ic
+    meta = doc.setdefault("_idea_engine_meta", {})
+    meta["integrity_check"] = integrity_meta(vd)
+    meta["guard_warnings"] = vd.get("_guard_warnings", [])
+    return vd
+
+
+def _render_issue_list(ic: Dict[str, Any]) -> None:
+    sev_color = {"CRITICAL": "#C62828", "MAJOR": "#F9A825", "MINOR": "#6B6B7B"}
+    for i in (ic.get("issues") or []):
+        sv = i.get("severity", "")
+        fix = i.get("fix") or {}
+        fix_txt = (f"<br><span style='color:#191970'>수정안: <code>{fix.get('op', '')}</code> "
+                   f"<code>{fix.get('path', '')}</code> → {fix.get('value', '')}</span>") if fix else ""
+        st.markdown(
+            f'<div style="border-left:3px solid {sev_color.get(sv, "#191970")};padding:8px 10px;'
+            f'margin:6px 0;background:#FFFEF5;"><b>{i.get("id", "")} · {i.get("category", "")}</b> '
+            f'<span style="color:{sev_color.get(sv, "#191970")};font-weight:700">{sv}</span><br>'
+            f'위치: <code>{i.get("path", "")}</code><br>{i.get("problem", "")}<br>'
+            f'<span style="color:#6B6B7B">근거: {i.get("evidence", "")}</span>{fix_txt}</div>',
+            unsafe_allow_html=True)
+
+
+def page_seed_revision():
+    section_header("✏ 시드 개정", "SEED REVISION")
+    small_meta("확정된 LOCKED 시드를 다시 열어 작가의 변경 지시를 연동된 모든 키에 일관되게 반영합니다. "
+               "영향 분석은 Opus, 무결성 재검사는 Sonnet이 맡습니다.")
+
+    up = st.file_uploader("LOCKED 시드 JSON 업로드 (IdeaSeed_*.json)", type=["json"], key="rev_uploader")
+    if up is not None and st.session_state.get("revision_doc_name") != up.name:
+        try:
+            data = json.load(up)
+        except Exception as e:
+            st.error(f"JSON 읽기 실패: {e}")
+            return
+        if not isinstance(data, dict) or not isinstance(data.get("locked_seed"), dict):
+            st.error("LOCKED 시드 파일이 아닙니다. Stage 7에서 받은 'IdeaSeed_…_크리에이터엔진용' 파일을 올려 주십시오. "
+                     "진행 백업(IdeaProgress_…)은 개정 대상이 아닙니다.")
+            return
+        st.session_state["revision_doc"] = data
+        st.session_state["revision_doc_name"] = up.name
+        st.session_state["revision_plan"] = None
+        st.session_state["revision_result"] = None
+
+    doc = st.session_state.get("revision_doc")
+    if not doc:
+        st.info("개정할 시드 JSON을 올리면 현재 로그라인·의제 목록이 표시됩니다.")
+        return
+
+    seed = doc.get("locked_seed") or {}
+    rev_now = detect_revision_number(doc, st.session_state.get("revision_doc_name", ""))
+    st.markdown(f"**{doc.get('title', '')}** · `{seed.get('project_id', '')}` · 현재 rev{rev_now}")
+    st.markdown(f"<div class='callout'>{seed.get('locked_logline', '')}</div>", unsafe_allow_html=True)
+    with st.expander("결정 대기 의제 (작가가 결정하면 LOCK으로 흡수됩니다)", expanded=False):
+        for i, q in enumerate(seed.get("locked_creator_questions") or []):
+            st.markdown(f"- `creator_questions[{i}]` {q.get('question', '') if isinstance(q, dict) else q}")
+        for i, q in enumerate(doc.get("pending_decisions") or []):
+            st.markdown(f"- `pending_decisions[{i}]` {q}")
+
+    instruction = st.text_area(
+        "변경 지시", key="rev_instruction", height=160,
+        placeholder="예) 로그라인을 아래 문장으로 교체. / 적대자 표현을 '국민 영웅의 얼굴을 한 공작원'으로 통일. / "
+                    "결말 의제는 '프레임이 반쯤 벗겨진 채 도장을 떠난다'로 결정.",
+    )
+    if st.button("◆ 영향 분석 (Opus)", type="primary", use_container_width=True, key="rev_plan_btn"):
+        if not instruction.strip():
+            st.warning("변경 지시를 입력해 주십시오.")
+        else:
+            client = get_anthropic_client()
+            if not client:
+                st.warning("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+                return
+            with st.spinner("Opus가 연동된 키를 찾아 수정안을 만드는 중... (40~90초)"):
+                st.session_state["revision_plan"] = build_revision_plan(client, doc, instruction)
+                st.session_state["revision_result"] = None
+            st.rerun()
+
+    plan = st.session_state.get("revision_plan")
+    if plan and not st.session_state.get("revision_result"):
+        if plan.get("_error"):
+            st.error(plan["_error"])
+            return
+        st.markdown("---")
+        st.markdown(f"**지시 재진술** — {plan.get('instruction_summary', '')}")
+        for w in plan.get("warnings") or []:
+            st.warning(w)
+        approved = set()
+        for c in plan.get("changes") or []:
+            cid = c.get("id", "")
+            label = f"{cid} · `{c.get('op', '')}` {c.get('path', '')}"
+            if st.checkbox(label, value=True, key=f"rev_ok_{cid}"):
+                approved.add(cid)
+            val = c.get("value")
+            val_txt = json.dumps(val, ensure_ascii=False) if not isinstance(val, str) else val
+            st.markdown(
+                f"<div style='margin:-6px 0 10px 28px;font-size:.88rem'>"
+                f"<span style='color:#6B6B7B'>전: {c.get('before_excerpt', '')}</span><br>"
+                f"후: {val_txt if c.get('op') != 'remove' else '(삭제)'}<br>"
+                f"<span style='color:#191970'>사유: {c.get('reason', '')}</span></div>",
+                unsafe_allow_html=True)
+        absorbed = plan.get("absorbed_questions") or []
+        if absorbed:
+            st.markdown("**LOCK으로 흡수되는 의제**")
+            for a in absorbed:
+                st.markdown(f"- {a.get('question', '')} → {a.get('decision', '')}")
+        if st.button("✓ 승인 항목 반영 + 무결성 재검사", type="primary", use_container_width=True, key="rev_apply"):
+            new_doc, applied, rejected, protected = apply_revision_plan(doc, plan, approved, instruction, rev_now)
+            client = get_anthropic_client()
+            with st.spinner("Sonnet이 개정본 무결성 검사 중... (20~40초)"):
+                vd = revision_guard_and_check(client, new_doc, protected)
+            st.session_state["revision_result"] = {
+                "doc": new_doc, "vd": vd, "applied": applied, "rejected": rejected,
+                "protected": sorted(protected),
+            }
+            st.rerun()
+
+    res = st.session_state.get("revision_result")
+    if res:
+        new_doc, vd = res["doc"], res["vd"]
+        protected = set(res.get("protected") or [])
+        rev_new = (new_doc.get("_idea_engine_meta") or {}).get("revision", rev_now + 1)
+        st.markdown("---")
+        st.success(f"rev{rev_new} 반영 — 적용 {len(res['applied'])}건 · 거부 {len(res['rejected'])}건")
+        for rj in res["rejected"]:
+            st.caption(f"거부: {rj.get('id')} {rj.get('path')} — {rj.get('result')}")
+        for w in vd.get("_guard_warnings") or []:
+            st.warning(w)
+        ic = vd.get("_integrity_check") or {}
+        if ic.get("_error"):
+            st.error(ic["_error"])
+        else:
+            st.markdown(f"**LOCK 무결성 재검사** — {ic.get('summary', '')}")
+            _render_issue_list(ic)
+            render_benchmark_tables(ic.get("benchmark_engine_tables") or [], "기준 작품 핵심 엔진 (개정본 기준)")
+            if ic.get("issues") and not ic.get("_applied"):
+                if st.button("✓ 무결성 수정안 적용 (작가 개정 항목 제외)", key="rev_ic_apply", use_container_width=True):
+                    apply_revision_integrity_fixes(new_doc, vd, protected)
+                    st.rerun()
+            elif ic.get("_applied"):
+                st.caption(f"수정안 적용 {len(ic.get('_applied_fixes', []))}건 · 제외·거부 {len(ic.get('_rejected_fixes', []))}건")
+                for rj in ic.get("_rejected_fixes", []) or []:
+                    st.caption(f"제외·거부: {rj.get('id')} {rj.get('path')} — {rj.get('result')}")
+
+        pid = (new_doc.get("locked_seed") or {}).get("project_id", "unknown")
+        out = json.dumps(new_doc, ensure_ascii=False, indent=2)
+        st.download_button(
+            label=f"🔑 개정 시드 JSON 다운로드 (rev{rev_new}) ★ Creator Engine 인계용",
+            data=out.encode("utf-8"),
+            file_name=f"IdeaSeed_{pid}_크리에이터엔진용_{datetime.now().strftime('%Y%m%d')}_rev{rev_new}.json",
+            mime="application/json", use_container_width=True, key="rev_download",
+        )
+        with st.expander("개정본 JSON 미리보기"):
+            st.code(out, language="json")
+        if st.button("→ 이 개정본에서 이어서 다시 개정", key="rev_continue", use_container_width=True):
+            st.session_state["revision_doc"] = new_doc
+            st.session_state["revision_doc_name"] = f"_rev{rev_new}"
+            st.session_state["revision_plan"] = None
+            st.session_state["revision_result"] = None
+            if "rev_instruction" in st.session_state:
+                del st.session_state["rev_instruction"]
+            st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════
 # MAIN ROUTING (v2.0 — 3-way mode dispatch)
 # ═══════════════════════════════════════════════════════════
 mode = st.session_state.get("mode", "HOME")
 
 if mode == "HOME":
     page_home()
+
+elif mode == "REVISE":
+    page_seed_revision()
 
 elif mode == "HUNTER":
     entry = st.session_state.get("hunter_entry")
