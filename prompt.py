@@ -5,7 +5,7 @@ BLUE JEANS PICTURES · Creative Triage Engine
 Creator Engine 입구의 진단·판정 엔진.
 모호한 아이디어를 받아 Hook 진단 → Format 추천 → Reference 매핑 →
 Market 분석 → 최종 GO/NoGo 판정을 거쳐
-Creator Engine이 받아먹을 수 있는 LOCKED 시드 패키지를 생성한다.
+Creator Engine이 이어받을 수 있는 LOCKED 시드 패키지를 생성한다.
 
 [v1.1 변경 사항 — 2026-05-05]
 Creator Engine v2.5.2가 흡수하는 5개 신규 LOCKED 영역을 시드 출력에 추가.
@@ -53,6 +53,38 @@ SHARED_RULES = """
 판타지·SF 설정, 장르 관습으로 용인되는 과장, 작가가 명백히 의도적으로 비튼 설정은
 여기에 해당하지 않는다. 확신이 없으면 그 직업의 핵심 업무만 쓰고 주변 업무는
 부여하지 않는다. 억지로 교정 의견을 내지 않는다.
+
+[공공 시스템 발령 권한 — v2.3.4 · 직업 역할 확인의 확장]
+경보·재난문자·긴급 통제 같은 공공 시스템은 법적 발령 주체만 작동시킬 수 있다.
+적대 세력·민간인이 공공 경보를 "울린다"고 쓰지 않는다. 적대 세력이 할 수 있는 것은
+공격·위협·해킹 시도이며, 경보 발령은 그 결과로 권한 주체가 하는 행위다.
+- 민방위 경보(경계경보·공습경보): 행정안전부(중앙민방위경보통제소) 또는 시·도
+  (지역 민방위경보통제소)가 발령한다. 2023년 5월 31일 서울 경계경보는 서울시가 발령했다.
+- 주인공이 공공 시스템을 역이용하는 설정은 권한을 가진 인물(통제소 근무자·공무원)의
+  협력이나 탈취·위조 과정을 거쳐야 하며, 그 과정을 생략하지 않는다.
+
+[레퍼런스 사실 규칙 — v2.3.4 · 전 단계 공통]
+- 레퍼런스 작품의 주인공 직업·소속·수사 방식을 사실과 다르게 쓰지 않는다.
+  경찰·형사·요원이 주인공인 작품을 "제도 밖 단독 주인공", "시스템 외부 영웅",
+  "공권력 바깥" 같은 좌표로 쓰지 않는다. 유사성은 사실과 맞는 축(구조·악역 구도·감정선)으로만 설명한다.
+- 관객 수·흥행 순위·"천만" 같은 흥행 수치는 쓰지 않는다. 흥행 좌표가 필요하면 수치 없이 장르 계보로만 서술한다.
+- 이 규칙은 작가에게 보이는 질문 문구·힌트·진단 문장에도 똑같이 적용한다.
+
+[공공 인프라 기능 범위 — v2.3.4 · 전 단계 공통 (v2.4 Reality Pre-Check 전까지)]
+- 공공 시스템(재난문자·경계경보·112/119·CCTV 관제·주민등록·출입국 등)에 실제로 없는 기능을 부여하지 않는다.
+- 확인된 사실: 휴대전화 재난문자는 기지국 셀 방송으로 보내는 짧은 텍스트다
+  (위급·긴급재난문자 90자, 안전안내문자 157자). 영상 재생 기능은 없다.
+- 군중 반응 사실성: 경보 상황을 "질서 있는 대피로 텅 빈 도시"로 그리지 않는다. 실제 사례는 혼란이었다.
+  · 1983년 2월 25일 이웅평 귀순 당시 수도권 공습경보 — 시민들이 전쟁으로 받아들였고
+    신문사·방송사에 전화가 폭주했으며 동네 가게의 라면·우유·밀가루가 동났다.
+  · 2023년 5월 31일 서울 경계경보 — 문자에 대피 장소 정보가 없었고, 경보 발령 9분 뒤 문자가 발송됐으며,
+    포털 모바일 접속이 수 분간 장애를 일으켰고, 행정안전부와 서울시가 오발령 여부를 두고 책임 공방을 벌였다.
+- 확신이 없는 시스템 기능은 단정하지 않고 "제도 사실성 확인 필요"로 기록한다.
+
+[엔진 추정 수치 — v2.3.4]
+- 제작비·손익분기·관객 수·매출 같은 수치를 엔진이 추정해 쓰지 않는다. 결정이 필요하면 수치 없이
+  결정 항목("캐스팅 티어에 따라 제작비 상한을 사전 결정")으로 남긴다.
+- 수치가 꼭 필요하면 그 수치 바로 앞에 "엔진 추정치(미검증)"라고 표기한다.
 """
 
 # ============================================================================
@@ -80,6 +112,30 @@ LOGLINE_REFINE_PROMPT = """당신은 한국 영화/드라마 산업의 시니어
 
 ★ 로그라인은 '누가 / 무엇을 원하는데 / 무엇이 막는가'로 구성한다.
 
+[★ v2.3.4 로그라인 두 형식 — 매 변형마다 둘 다 출력 ★]
+- 엔진형(logline): 1문장. 하류 엔진 인계용. 기존 표준 포맷.
+- 피칭형(pitch_logline): 3문장. 로그라인에 3막이 보여야 한다.
+  · 1문장 = 1막 사건 (세계와 도발 사건)
+  · 2문장 = 2막 반전 (주인공이 빠지는 함정·뒤집힘)
+  · 3문장 = 3막 주인공의 행동 (해결을 향해 주인공이 직접 하는 일)
+  형식 예시(가상): "태풍으로 섬과 육지를 잇는 다리가 끊긴다.
+       섬에 남은 유일한 의사가 환자 살해 용의자로 지목되고 마을 사람들이 그를 가둔다.
+       의사는 감금된 창고를 빠져나와 폭풍 속 섬을 가로질러 진짜 범인보다 먼저 다음 환자에게 닿는다."
+  예시는 형식만 참고한다. 소재·인물·사건을 가져다 쓰지 않는다.
+
+[★ v2.3.4 로그라인 문장 규칙 — 두 형식 모두 적용 ★]
+(1) 자기 규정 형용사 금지: "역설적·충격적·감동적·파격적·전례 없는" 같이 작품 성격을 스스로 규정하는 형용사를 쓰지 않는다.
+    역설·충격은 문장 구조(누가 무엇을 하다가 무엇이 되는가)로 보여준다.
+    ✗ "…구해야 하는 역설적 액션 스릴러"  ○ "아이들을 구하러 간 사범이 납치범으로 수배된다"
+(2) 장르별 마지막 동사: 장르가 ACTION이면 3막 문장(엔진형은 문장 끝)을 신체 행동 동사로 끝낸다
+    (뚫는다·가로지른다·되찾는다·쫓는다·맞선다 등). "드러낸다·벗긴다·폭로한다"로 끝내면 폭로극으로 읽힌다.
+    CRIME·SOCIAL처럼 폭로가 장르의 본질인 경우에만 폭로 동사를 쓴다.
+(3) 문장 내부 지시 정합: 앞에서 한 번도 나오지 않은 서수("세 번째 경보")를 쓰지 않는다.
+    지시 대상이 둘 이상 가능한 대명사("그의 정체" — 주인공인지 적인지 불명)를 쓰지 않고 명사로 다시 쓴다.
+(4) 행위 주체 정합: 공공 시스템(경보·재난문자 등)은 발령 권한 주체만 작동시킨다. 적대 세력이 경보를 "울린다"고 쓰지 않는다.
+(5) 원안 핵심 보존: 원본 아이디어에서 작가가 명시한 적대 세력·핵심 사건·주제는 로그라인에서 지우지 않는다.
+    길이 때문에 줄여야 하면 피칭형 1막 문장에 남긴다.
+
 [★ 포맷 어휘 금지 — 절대 준수 · v2.2 신규 ★]
 로그라인 본문에 매체·회차·러닝타임·플랫폼 명칭을 절대 포함하지 않는다.
 금지 어휘 예시:
@@ -98,27 +154,41 @@ LOGLINE_REFINE_PROMPT = """당신은 한국 영화/드라마 산업의 시니어
 - B안: 후크 강조 (캐릭터의 매력·아이러니 부각)
 - C안: 주제 강조 (사회·시대·인간 본질의 울림)
 
+[원안 의도 추출 — v2.3.4]
+원본 아이디어에서 작가가 직접 쓴 핵심 요소만 뽑는다. 엔진의 해석·보완을 섞지 않는다.
+원본에 없는 항목은 빈 배열로 둔다.
+
 [출력 JSON]
 {{
+  "origin_intent": {{
+    "antagonist_forces": ["작가가 명시한 적대 세력 (원문 표현 그대로)"],
+    "core_events": ["작가가 명시한 핵심 사건 (원문 표현 그대로)"],
+    "themes": ["작가가 명시한 주제·문제의식 (원문 표현 그대로)"],
+    "reference_works": ["작가가 기준으로 언급한 작품명"],
+    "protagonist": "작가가 명시한 주인공 설정 1구절 (없으면 빈 문자열)"
+  }},
   "logline_variants": [
     {{
       "variant": "A",
       "label": "기본 구도",
-      "logline": "60~120자 한국어 로그라인",
+      "logline": "엔진형 1문장 · 60~120자",
+      "pitch_logline": ["1막 사건 1문장", "2막 반전 1문장", "3막 주인공의 행동 1문장"],
       "strength": "이 안의 강점 1줄",
       "weakness": "이 안의 약점 1줄"
     }},
     {{
       "variant": "B",
       "label": "후크 강조",
-      "logline": "60~120자 한국어 로그라인",
+      "logline": "엔진형 1문장 · 60~120자",
+      "pitch_logline": ["1막 사건 1문장", "2막 반전 1문장", "3막 주인공의 행동 1문장"],
       "strength": "이 안의 강점 1줄",
       "weakness": "이 안의 약점 1줄"
     }},
     {{
       "variant": "C",
       "label": "주제 강조",
-      "logline": "60~120자 한국어 로그라인",
+      "logline": "엔진형 1문장 · 60~120자",
+      "pitch_logline": ["1막 사건 1문장", "2막 반전 1문장", "3막 주인공의 행동 1문장"],
       "strength": "이 안의 강점 1줄",
       "weakness": "이 안의 약점 1줄"
     }}
@@ -576,6 +646,26 @@ REFERENCE_MAPPING_PROMPT = """당신은 영화/드라마 산업의 시니어 프
 [Market Lens — 타겟 시장 좌표]
 {market_lens}
 
+[작가가 기준으로 제시한 작품 — 원안 의도]
+{benchmark_works}
+
+[★ v2.3.4 기준 작품 핵심 엔진 표 ★]
+작가가 기준 작품을 제시했으면, 각 작품마다 그 작품을 작동시키는 핵심 엔진 3~4개를 뽑는다.
+핵심 엔진은 그 작품의 구조·적대자·주인공·결말을 움직이는 장치를 구체적 인물·사건으로 쓴다.
+  예) 『다크나이트』: 적대자의 철학적 동기 / 도시가 믿던 영웅(하비 덴트)의 몰락 /
+      시민 전체가 시험대가 되는 딜레마 / 영웅이 호명되지 않는 결말
+각 엔진이 현재 기획(로그라인·원본 아이디어)에서 어떻게 되었는지 판정한다.
+  유지 = 같은 기능으로 남아 있음 / 변형 = 기능은 남고 형태가 바뀜 / 탈락 = 기획에 없음
+판정마다 기획 쪽 대응 요소를 1구절로 적는다. 탈락이면 빈 문자열.
+유지가 핵심 엔진 대부분이고 대응이 1:1로 겹치면 plagiarism_distance_warning을 true로 하고 이유를 쓴다.
+작가가 기준 작품을 제시하지 않았으면 benchmark_engine_tables는 빈 배열이다.
+
+[★ v2.3.4 주인공 원형 과포화 ★]
+줄거리 유사작과 별개로, 주인공 원형 자체가 최근 시장에서 과포화되었는지 판정한다.
+(예: 북한 출신 요원·탈북민 주인공, 전직 특수요원 아버지, 재벌 3세 등)
+같은 원형의 주인공을 내세운 작품을 사실에 맞게 2~4편 들고, 포화도와 차별화 방향을 쓴다.
+확신이 없는 작품은 넣지 않는다.
+
 [작업]
 이 소재와 가장 가까운 유사작 5편을 찾고, 각 작품과의 공통점·차별점을 명확히 한다.
 그리고 최근 3년 내 정확히 동일한 소재가 만들어졌는지 검증한다 (치명적 유사작 경고).
@@ -605,7 +695,23 @@ REFERENCE_MAPPING_PROMPT = """당신은 영화/드라마 산업의 시니어 프
     "details": "치명적 유사작이 있다면 작품명과 위험도 설명. 없으면 '없음 - 안전' "
   }},
   "differentiation_summary": "본 기획의 핵심 차별화 포인트 3가지를 1문장씩",
-  "investor_pitch_answer": "투자자가 '이거 [어떤 작품] 같은 건가요?' 물을 때 답변용 문장 2~3문장"
+  "investor_pitch_answer": "투자자가 '이거 [어떤 작품] 같은 건가요?' 물을 때 답변용 문장 2~3문장",
+  "benchmark_engine_tables": [
+    {{
+      "work": "기준 작품명 (연도)",
+      "engines": [
+        {{"engine": "핵심 엔진 1구절", "status": "유지 | 변형 | 탈락", "seed_counterpart": "기획 쪽 대응 요소 1구절"}}
+      ],
+      "plagiarism_distance_warning": false,
+      "warning_reason": "경고 사유 1문장 (경고 없으면 빈 문자열)"
+    }}
+  ],
+  "archetype_saturation": {{
+    "protagonist_archetype": "이 기획 주인공의 원형 1구절",
+    "saturation_level": "낮음 | 보통 | 높음",
+    "comparable_works": ["같은 원형 주인공 작품 (연도)"],
+    "differentiation_direction": "원형 과포화를 피하는 방향 1~2문장"
+  }}
 }}
 
 [주의]
@@ -768,6 +874,25 @@ FINAL_VERDICT_PROMPT = """당신은 한국 영화/드라마 산업의 시니어 
 [★ 작가 답변 원장 — 3-A+ 보강 답변 · 3-B Hook & Punch 10문 답변 (질문 원문 포함) ★]
 {writer_answers}
 
+[원안 의도 — Stage 2에서 원본 아이디어로부터 추출한 작가의 핵심 요소]
+{origin_intent}
+
+[Stage 2에서 작가가 채택한 피칭형 로그라인 (3문장)]
+{pitch_logline}
+
+[★ v2.3.4 원안 의도 보존 ★]
+- 원안 의도의 적대 세력·핵심 사건·주제는 locked_logline 또는 locked_core_decisions 어딘가에 반드시 남는다.
+- 진단상 축소가 정당하면(예: 빌런 과부하 해소) 지우지 말고 "배경 레이어로 후퇴"로 locked_core_decisions에 남기고
+  rationale에 사유를 쓴다.
+- 비국가 세력을 국가 단위로 읽히게 쓰지 않는다. 정부와 무관한 세력이면 "북한 강경파", "일본 극우"처럼
+  세력 단위로 쓰고, "북·일 연합"처럼 두 나라 정부의 동맹으로 읽히는 표현을 쓰지 않는다.
+
+[★ v2.3.4 로그라인 규칙 ★]
+- locked_logline(엔진형 1문장)과 pitch_logline(피칭형 3문장: 1막 사건 / 2막 반전 / 3막 주인공의 행동)을 둘 다 낸다.
+  Stage 2 채택본이 있으면 그것을 기준으로 다듬기만 하고 다시 쓰지 않는다.
+- 자기 규정 형용사(역설적·충격적·감동적 등) 금지. 장르가 ACTION이면 마지막 동사는 신체 행동 동사.
+- 앞에서 나오지 않은 서수, 지시 대상이 모호한 대명사 금지. 적대 세력이 공공 경보를 "울린다"고 쓰지 않는다.
+
 [★ v2.3.3 작가 답변 우선 규칙 — 모든 규칙보다 우선한다 ★]
 작가 답변 원장에 있는 답은 작가가 명시적으로 내린 결정이다. 진단관은 이를 바꾸지 못한다.
 - 작가가 답한 항목은 작가의 답을 그대로 LOCK한다. 더 극적이거나 시장성이 좋아 보이는
@@ -793,12 +918,8 @@ FINAL_VERDICT_PROMPT = """당신은 한국 영화/드라마 산업의 시니어 
   · 본질 5원칙 점수 = Stage 3-A/3-A+ 결과의 foundation_total_score
   점수를 언급할 때는 반드시 "Hook 5축 N점" 또는 "본질 5원칙 N점"으로 이름을 붙인다.
 
-[★ v2.3.3 레퍼런스 사실 규칙 ★]
-- 레퍼런스 설명은 그 작품의 주인공 직업·소속·수사 방식을 사실과 다르게 쓰지 않는다.
-  경찰·형사·요원이 주인공인 작품을 "제도 밖 단독 주인공", "공권력 바깥" 같은 좌표로 쓰지 않는다.
-  유사성은 사실과 맞는 축(구조·악역 구도·감정선)으로만 설명한다.
-- 관객 수·흥행 순위·"천만" 같은 흥행 수치는 시드와 요약 어디에도 쓰지 않는다.
-  흥행 좌표가 필요하면 수치 없이 장르 계보로만 서술한다.
+[레퍼런스 사실 규칙 · 공공 인프라 · 엔진 추정 수치]
+공통 규칙(SHARED_RULES)을 그대로 적용한다.
 
 [★ v2.3.3 문장 무결성 자가 점검 — 출력 전 반드시 수행 ★]
 - 자기모순 표현 금지: 한 구절 안에서 서로를 부정하는 표현을 쓰지 않는다.
@@ -810,15 +931,6 @@ FINAL_VERDICT_PROMPT = """당신은 한국 영화/드라마 산업의 시니어 
   예: "카메라는 끝까지 주인공 동선에만 고정" + "결정적 장치를 조력자가 단독으로 작동"
   → 조력자의 단독 장면이 필요해져 동시 충족 불가. 이 경우 하나를 고치거나
   "조력자 행동은 주인공이 통화·화면으로 듣고 보는 방식으로만 노출"처럼 둘을 함께 지키는 방식을 명시한다.
-
-[★ v2.3.3 공공 인프라 기능 범위 — 임시 규칙 (v2.4 Reality Pre-Check 전까지) ★]
-- 재난문자·경계경보·112/119·CCTV 관제·주민등록·출입국 같은 공공 시스템을 플롯 장치로 쓸 때,
-  그 시스템이 실제로 할 수 없는 기능을 부여하지 않는다.
-- 확인된 사실: 휴대전화 재난문자는 기지국 셀 방송으로 보내는 짧은 텍스트다.
-  위급·긴급재난문자 90자, 안전안내문자 157자. 영상 재생 기능은 없다.
-  영상 폭로가 필요하면 "재난문자로 링크·단서 문구를 송출하고 영상은 다른 매체로 확산"처럼
-  실제 기능 범위 안에서 설계한다.
-- 확신이 없는 시스템 기능은 단정하지 않고 locked_risks_to_address에 "제도 사실성 확인 필요"로 기록한다.
 
 [project_id 규칙]
 - project_id는 영문 SNAKE_CASE 제목만 쓴다. 연도 접미사를 붙이지 않는다 (엔진이 생성일 연도를 붙인다).
@@ -931,6 +1043,7 @@ Stage 4의 format_confidence 판정을 그대로 승계한다.
   "pending_decisions_for_creator": [
     "Creator Engine에서 결정해야 할 핵심 질문 3개"
   ],
+  "pitch_logline": ["1막 사건 1문장", "2막 반전 1문장", "3막 주인공의 행동 1문장"],
   "locked_seed_package": {{
     "project_id": "프로젝트 식별자 (영문 SNAKE_CASE, 연도 접미사 없이)",
     "title_kr": "한글 제목 (가제)",
@@ -2621,6 +2734,11 @@ STAGE_3A_STORY_FOUNDATION_PROMPT = """당신은 BLUE JEANS PICTURES의 시니어
   본질: 그 인물이 무엇을 원하는가. 욕망의 강도와 구체성.
   진단 포인트:
     - BJND 본질: 결핍(한 번도 못 가진 것) / 상실(잃은 것) / 혼합
+    - ★ v2.3.4 desire_origin (욕망의 발생 근원) — 결핍 | 상실 | 미정
+      작가의 입력이 주인공의 과거를 명시해 결핍·상실 중 하나로 판정할 근거가 있을 때만 결핍 또는 상실로 쓴다.
+      근거가 없으면 반드시 "미정"으로 쓴다. 추측해서 채우지 않는다.
+      이 판정이 주인공 설계의 출발점이다 — 같은 구출 액션이라도 상실형(잃은 것을 되찾음)과
+      결핍형(한 번도 갖지 못한 것을 처음 얻음)은 결말의 Recognition이 다르다.
     - desire 대상의 구체성: 명사인가 추상인가
     - desire 강도: 일상적 / 중대 / 절박 / 광기
 
@@ -2668,6 +2786,8 @@ STAGE_3A_STORY_FOUNDATION_PROMPT = """당신은 BLUE JEANS PICTURES의 시니어
   "principle_2_desire_engine": {{
     "diagnosis": "주인공의 욕망을 1~2문장",
     "bjnd_type": "결핍 | 상실 | 혼합",
+    "desire_origin": "결핍 | 상실 | 미정 — 근거 없으면 미정",
+    "desire_origin_evidence": "판정 근거가 된 작가 입력 구절 (미정이면 빈 문자열)",
     "desire_target": "욕망의 구체적 대상 (명사 1~2개)",
     "desire_intensity": "일상적 | 중대 | 절박 | 광기",
     "korean_reference": "한국 작품 1편 + 좌표 1문장",
@@ -2732,6 +2852,14 @@ STAGE_3B_HOOK_PUNCH_PROMPT = """당신은 BLUE JEANS PICTURES의 Hook & Punch �
 
 [앞 단계 진단 결과]
 {foundation_result}
+
+[작가 답변 원장 — 3-A+ 보강 답변 · 이전 회차 3-B 답변 (질문 원문 포함)]
+{writer_answers}
+
+[★ v2.3.4 작가 답변 존중 ★]
+- 질문 본문과 힌트는 작가 답변 원장의 결정(결말·인물 설정 등)과 어긋나지 않게 쓴다.
+- 이전 회차 3-B 답이 있는 질문은 그 답을 확인하는 형태로 쓴다 (화면에는 이전 답이 미리 채워진다).
+- 레퍼런스 작품을 질문·힌트에 인용할 때 공통 규칙의 레퍼런스 사실 규칙을 지킨다.
 
 [Hook & Punch 정의]
 
@@ -2945,11 +3073,26 @@ STAGE_3A_PLUS_REINFORCE_PROMPT = """당신은 BLUE JEANS PICTURES의 시니어 �
 [앞 단계 Story Core 5원칙 진단 결과]
 {foundation_result}
 
+[★ 작가 답변 원장 — 이전 회차 3-A+ 답변 · 3-B 답변 (질문 원문 포함) ★]
+{previous_answers}
+
+[★ v2.3.4 이전 답변 재질문 금지 ★]
+- 작가 답변 원장에 이미 답이 있는 주제(결말·욕망의 근원·적대자 등)는 다시 묻지 않는다.
+- 그 답을 "모른다/미정"으로 진단하지 않는다. 이미 답한 내용은 confirmed_previous에 요약해 확인만 받는다.
+- 이전 답을 더 구체화해야 하면, 같은 질문을 반복하지 말고 그 답을 전제로 한 다음 단계 질문을 만든다.
+
 [보강 발굴 작업]
 
 위 진단 결과에서 diagnosis_score가 낮은 원칙(7점 미만)을 모두 골라낸다.
 각 원칙마다 작가가 그 약점을 메울 수 있도록 2개씩 정밀 질문을 생성한다.
 weakest_principle로 지정된 원칙은 반드시 포함한다.
+
+[★ v2.3.4 욕망의 근원 1순위 ★]
+principle_2_desire_engine.desire_origin이 "미정"이면 (점수와 관계없이) 첫 질문 R1을 반드시 이것으로 만든다.
+  질문: 주인공의 욕망은 상실에서 시작되었는가, 결핍에서 시작되었는가
+  hint_options: ["상실 — 가졌다가 잃은 것을 되찾으려 한다", "결핍 — 한 번도 갖지 못한 것을 처음 얻으려 한다"]
+  target_principle: "원칙 2 — Desire Engine (욕망의 근원)"
+작가 답변 원장에 이미 결핍·상실 답이 있으면 묻지 않고 confirmed_previous에 넣는다.
 
 [원칙별 발굴 방향 — 약한 원칙에만 적용]
 
@@ -2987,6 +3130,9 @@ weakest_principle로 지정된 원칙은 반드시 포함한다.
   "echo_back": "앞 진단의 핵심 약점을 1~2문장으로 재진술 (작가가 자기 결을 알아보도록)",
   "weak_principles_detected": ["7점 미만으로 감지된 원칙 이름 배열 (예: 원칙 2 Desire Engine)"],
   "reinforce_intro": "보강 발굴 안내 1~2문장",
+  "confirmed_previous": [
+    {{"topic": "이전에 답한 주제 (예: 결말)", "previous_answer_summary": "작가의 이전 답 요약 1문장", "source_q_id": "이전 질문 번호"}}
+  ],
   "reinforce_questions": [
     {{"q_id": "R1", "target_principle": "원칙 N — 원칙명", "principle_axis": "발굴 축 1구절", "question": "정밀 질문 1문장", "hint_options": ["옵션은 BJND 결핍/상실, 결말 유형 등 분류형일 때만, 자유작성이면 빈 배열"]}}
   ],
@@ -3017,8 +3163,15 @@ STAGE_3A_PLUS_BUILD_PROMPT = """당신은 BLUE JEANS PICTURES의 본질 보강 �
 [보강 전 Story Core 5원칙 진단 결과]
 {foundation_result}
 
-[작가의 보강 발굴 답변]
+[작가의 보강 발굴 답변 — 이번 회차]
 {reinforce_answers}
+
+[작가 답변 원장 — 이전 회차 답변 (이번 회차와 함께 반영한다)]
+{previous_answers}
+
+[desire_origin 규칙]
+작가가 결핍·상실 중 하나를 답했으면 principle_2_desire_engine.desire_origin에 그대로 쓰고,
+desire_origin_evidence에 작가 답 구절을 적는다. 답이 없으면 "미정"을 유지한다.
 
 [빌드 작업]
 - 작가의 답변을 반영해 약했던 원칙의 diagnosis를 다시 쓰고 diagnosis_score를 갱신한다.
@@ -3031,7 +3184,7 @@ STAGE_3A_PLUS_BUILD_PROMPT = """당신은 BLUE JEANS PICTURES의 본질 보강 �
 출력은 3-A 원본과 동일한 5원칙 구조를 그대로 유지하되, 보강 결과를 반영한다.
 {{
   "principle_1_empathy_anchor": {{ "diagnosis": "...", "anchor_type": "...", "entry_point": "...", "audience_distance": "...", "korean_reference": "...", "hollywood_reference": "...", "diagnosis_score": 0, "improvement_note": "..." }},
-  "principle_2_desire_engine": {{ "diagnosis": "...", "bjnd_type": "결핍 | 상실 | 혼합", "desire_target": "...", "desire_intensity": "...", "korean_reference": "...", "hollywood_reference": "...", "diagnosis_score": 0, "improvement_note": "..." }},
+  "principle_2_desire_engine": {{ "diagnosis": "...", "bjnd_type": "결핍 | 상실 | 혼합", "desire_origin": "결핍 | 상실 | 미정", "desire_origin_evidence": "...", "desire_target": "...", "desire_intensity": "...", "korean_reference": "...", "hollywood_reference": "...", "diagnosis_score": 0, "improvement_note": "..." }},
   "principle_3_stakes_calibration": {{ "diagnosis": "...", "external_obstacle": "...", "internal_obstacle": "...", "achievability": "...", "korean_reference": "...", "hollywood_reference": "...", "diagnosis_score": 0, "improvement_note": "..." }},
   "principle_4_emotional_impact": {{ "diagnosis": "...", "hook_potential": "...", "punch_visibility": "...", "primary_emotion": "...", "audience_mirror": "...", "korean_reference": "...", "hollywood_reference": "...", "diagnosis_score": 0, "improvement_note": "..." }},
   "principle_5_satisfactory_ending": {{ "diagnosis": "...", "ending_type": "...", "catharsis_mechanism": "...", "writer_knows_ending": true, "korean_reference": "...", "hollywood_reference": "...", "diagnosis_score": 0, "improvement_note": "..." }},
@@ -3056,7 +3209,8 @@ STAGE_3A_PLUS_BUILD_PROMPT = """당신은 BLUE JEANS PICTURES의 본질 보강 �
 # ============================================================================
 # Stage 7(Opus)이 만든 LOCKED 시드를 작가 답변 원장과 대조해
 # 덮어쓰기 · 옵션 외 값 · 레퍼런스 사실 오류 · 자기모순 · LOCK 간 충돌 ·
-# 판정 불일치 · 공공 인프라 기능 범위 7종을 적출하고, 경로 단위 수정안을 낸다.
+# 판정 불일치 · 공공 인프라 기능 범위 7종 + (v2.3.4) 원안 의도 이탈 · 행위 주체 수준 ·
+# 실존 인물 식별 · 주인공 원형 과포화 · 엔진 추정 수치 5종 = 12종을 적출하고, 경로 단위 수정안을 낸다.
 # 수정안은 엔진 코드가 경로를 검증한 뒤 적용한다 (존재하지 않는 경로·타입 불일치는 버린다).
 # ============================================================================
 
@@ -3070,8 +3224,14 @@ SEED_INTEGRITY_CHECK_PROMPT = """당신은 BLUE JEANS PICTURES의 LOCKED 시드 
 - Hook 5축 점수: {hook_score}
 - 본질 5원칙 점수: {foundation_score}
 
-[작가 답변 원장 — 작가가 명시적으로 내린 결정]
+[작가 답변 원장 — 작가가 명시적으로 내린 결정 (시드 개정 지시 포함 — 개정 지시가 가장 우선)]
 {writer_answers}
+
+[원안 의도 — 작가가 원본 아이디어에서 명시한 핵심 요소]
+{origin_intent}
+
+[작가가 기준으로 제시한 작품]
+{benchmark_works}
 
 [엔진 코드가 이미 기계적으로 처리한 내역]
 {deterministic_log}
@@ -3082,7 +3242,7 @@ SEED_INTEGRITY_CHECK_PROMPT = """당신은 BLUE JEANS PICTURES의 LOCKED 시드 
 [검사 대상 임원 요약]
 {executive_summary}
 
-[적출 대상 7종]
+[적출 대상 12종]
 
 1. writer_override — 작가 답변과 다른 LOCK 값
    작가가 답한 결말·Punch·Hook·인물 설정이 시드에서 다른 내용으로 바뀌었는가.
@@ -3109,20 +3269,51 @@ SEED_INTEGRITY_CHECK_PROMPT = """당신은 BLUE JEANS PICTURES의 LOCKED 시드 
 6. verdict_inconsistency — final_verdict와 다른 판정어(PASS 등), 이름 없는 점수,
    Hook 5축 점수와 본질 5원칙 점수의 혼동, locked_hook_score와 Hook 5축 점수 불일치
 
-7. infrastructure_reality — 공공 시스템에 실제로 없는 기능을 부여
-   확인된 사실: 휴대전화 재난문자는 기지국 셀 방송 텍스트(위급·긴급 90자, 안전안내 157자)이며 영상 재생 불가.
+7. infrastructure_reality — 공공 시스템에 실제로 없는 기능을 부여하거나, 군중 반응을 비현실적으로 묘사
+   공통 규칙의 공공 인프라 기능 범위·공공 시스템 발령 권한을 기준으로 한다.
+   "경보로 텅 빈 서울"처럼 질서 있는 대피를 전제한 묘사, 적대 세력이 공공 경보를 직접 울리는 묘사를 적출한다.
    그 밖의 시스템은 확신할 때만 적출한다.
+
+8. intent_drift — 원안 의도 이탈
+   원안 의도의 적대 세력·핵심 사건·주제가 locked_logline과 locked_core_decisions 양쪽에서 모두 사라졌으면 적출한다.
+   진단상 축소가 정당해 보이면 복원 대신 locked_core_decisions에 "배경 레이어로 후퇴" 항목을
+   append하는 수정안을 내고, rationale에 사유를 쓴다.
+
+9. actor_level — 행위 주체 수준
+   정부와 무관한 비국가 세력을 "북·일 연합"처럼 국가 단위·정부 동맹으로 읽히는 표현으로 쓰면 적출한다.
+   수정은 세력 단위 표현("북한 강경파와 일본 극우")으로 한다.
+
+10. real_person_risk — 실존 인물 식별 위험
+   주인공·조연의 이력이 검색으로 실존 인물에 특정될 수준이면 적출한다
+   (예: 특정 대회·연도·종목·메달 색이 모두 박힌 선수 이력).
+   현직 공직(대통령·광역단체장 등)이 등장하면 성별·소속 정당·이력이 현직자와 구별되는지 점검한다.
+   수정은 식별 요소 하나 이상을 일반화하는 방향으로만 한다.
+
+11. archetype_saturation — 주인공 원형 과포화
+   주인공 원형 자체가 최근 시장에서 과포화되어 있는데 시드가 그 위험을 다루지 않으면 적출한다.
+   같은 원형 작품은 확신하는 것만 evidence에 쓴다. 수정안은 locked_risks_to_address append로 낸다.
+
+12. unverified_figure — 엔진 추정 수치
+   locked_core_decisions·locked_market_position·locked_risks_to_address·executive_summary에
+   제작비·손익분기·관객 수 같은 수치가 "엔진 추정치(미검증)" 표기 없이 들어가 있으면 적출한다.
+   수정은 수치를 지우고 결정 항목으로 바꾸거나, 수치 앞에 "엔진 추정치(미검증)"를 붙이는 방향.
 
 [작가 레퍼런스 추출]
 작가 답변 원장과 원본 아이디어에서 작가가 직접 언급한 작품명을 전부 뽑는다.
 locked_references에 없는 작품이 있으면 append 수정안을 낸다.
 append 값 형식: "제목 (연도) — 사실과 맞는 유사 축 1구절". 연도를 확신할 수 없으면 연도를 생략한다.
 
+[기준 작품 핵심 엔진 표 재판정]
+작가가 기준 작품을 제시했으면, 현재 시드 기준으로 각 작품의 핵심 엔진 3~4개를 유지·변형·탈락으로 다시 판정해
+benchmark_engine_tables에 담는다. 유지가 대부분이고 1:1 대응이면 plagiarism_distance_warning을 true로 한다.
+기준 작품이 없으면 빈 배열.
+
 [수정안 작성 규칙]
 - path는 시드 내부 경로다. 예: "locked_punch_scene.primary_emotion",
   "locked_core_decisions[1].rule", "locked_references", "locked_references[2]".
   임원 요약은 "executive_summary".
 - op는 "set"(기존 값 교체) 또는 "append"(배열 끝에 추가) 둘 중 하나.
+- 작가가 시드 개정 지시로 직접 바꾼 내용은 되돌리는 수정안을 내지 않는다. 문제가 있으면 fix를 null로 두고 problem에만 쓴다.
 - value 타입은 원래 값의 타입과 같아야 한다 (문자열 자리에 문자열, 객체 자리에 객체).
 - 존재하지 않는 키를 새로 만들지 않는다.
 - 한 결함당 수정안 1개. 고칠 필요가 없는 결함(MINOR 확인 필요 등)은 fix를 null로 둔다.
@@ -3133,7 +3324,7 @@ append 값 형식: "제목 (연도) — 사실과 맞는 유사 축 1구절". �
   "issues": [
     {{
       "id": "I1",
-      "category": "writer_override | off_option | fact_error | contradiction | lock_conflict | verdict_inconsistency | infrastructure_reality",
+      "category": "writer_override | off_option | fact_error | contradiction | lock_conflict | verdict_inconsistency | infrastructure_reality | intent_drift | actor_level | real_person_risk | archetype_saturation | unverified_figure",
       "severity": "CRITICAL | MAJOR | MINOR",
       "path": "결함 위치 경로",
       "problem": "무엇이 잘못됐는가 1문장",
@@ -3142,7 +3333,91 @@ append 값 형식: "제목 (연도) — 사실과 맞는 유사 축 1구절". �
     }}
   ],
   "writer_references_detected": ["작가가 직접 언급한 작품명"],
+  "benchmark_engine_tables": [
+    {{
+      "work": "기준 작품명 (연도)",
+      "engines": [
+        {{"engine": "핵심 엔진 1구절", "status": "유지 | 변형 | 탈락", "seed_counterpart": "시드 쪽 대응 요소 1구절"}}
+      ],
+      "plagiarism_distance_warning": false,
+      "warning_reason": ""
+    }}
+  ],
   "overall": "CLEAN | NEEDS_FIX",
   "summary": "검사 결과 1~2문장"
+}}
+""" + SHARED_RULES
+
+
+# ============================================================================
+# v2.3.4 : 시드 개정 모드 (Seed Revision) — 확정 시드를 작가 지시로 다시 연다
+# ============================================================================
+# 작가가 Stage 7 이후 결정한 변경(로그라인 교체·적대자 표현 변경 등)을
+# 24키 중 연동된 모든 지점에 일관되게 반영하는 수정안을 만든다.
+# 엔진 코드는 작가가 승인한 수정안만 경로 검증 후 적용하고, 무결성 검사를 다시 돌린다.
+# ============================================================================
+
+SEED_REVISION_PLAN_PROMPT = """당신은 BLUE JEANS PICTURES의 시드 개정 담당 디벨롭먼트 에디터다.
+확정된 LOCKED 시드에 작가가 변경 지시를 내렸다. 작가의 지시는 이 시드에서 가장 우선하는 결정이다.
+지시가 닿는 모든 지점을 찾아, 시드 전체가 한 목소리를 내도록 최소한의 수정안을 만든다.
+
+[작가의 변경 지시 — 이번 개정]
+{revision_instruction}
+
+[이전 개정 이력]
+{revision_history}
+
+[원안 의도 — 작가가 원본 아이디어에서 명시한 핵심 요소]
+{origin_intent}
+
+[현재 시드 JSON]
+{seed_json}
+
+[작업 1 — 영향받는 지점 찾기]
+작가 지시가 바꾸는 사실·표현이 등장하는 모든 위치를 찾는다. 같은 대상을 다른 말로 부른 곳도 포함한다.
+특히 다음 위치를 빠짐없이 확인한다:
+  raw_idea / locked_seed.locked_logline / locked_seed.locked_hook_signature.hook_one_liner /
+  locked_seed.locked_theme / locked_seed.locked_core_decisions / locked_seed.locked_visual_motifs /
+  locked_seed.locked_ending_form / locked_seed.locked_ending_promise / locked_seed.locked_empathy_anchor /
+  locked_seed.locked_punch_scene / locked_seed.locked_risks_to_address / locked_seed.locked_creator_questions /
+  executive_summary / pending_decisions
+작가가 이미 쓴 표현이 지시에 있으면 그 표현을 글자 그대로 쓴다. 다듬거나 바꾸지 않는다.
+
+[작업 2 — 결정된 의제 흡수]
+작가 지시가 locked_creator_questions 또는 pending_decisions의 어떤 항목에 답하고 있으면:
+  ① 그 결정을 locked_seed.locked_core_decisions에 append한다 (category·rule·rationale, rule은 "~로 LOCK").
+  ② 답이 된 질문 항목을 remove한다.
+흡수 내역은 absorbed_questions에 따로 기록한다.
+
+[작업 3 — 충돌 경고]
+작가 지시가 다른 LOCK과 동시에 지킬 수 없게 되면 warnings에 쓴다. 작가 지시를 되돌리는 수정안은 내지 않는다.
+공통 규칙(레퍼런스 사실·공공 인프라·엔진 추정 수치)에 어긋나는 결과가 생기면 warnings에 쓴다.
+
+[수정안 경로 규칙]
+- 시드 내부는 "locked_seed." 접두사를 붙인다. 예: "locked_seed.locked_logline",
+  "locked_seed.locked_core_decisions[2].rule", "locked_seed.locked_theme.surface".
+- 최상위 항목: "raw_idea", "executive_summary", "pending_decisions[1]".
+- op: "set"(기존 값 교체) / "append"(배열 끝에 추가) / "remove"(배열 원소 삭제, value는 null).
+- set의 value 타입은 원래 값과 같다. 문자열 일부만 바뀌어도 해당 문자열 전체를 새 값으로 준다.
+- 존재하지 않는 키를 새로 만들지 않는다.
+- 지시와 무관한 문장은 고치지 않는다. 문체 다듬기 금지.
+
+[출력 JSON]
+{{
+  "instruction_summary": "작가 지시를 1~2문장으로 재진술",
+  "changes": [
+    {{
+      "id": "C1",
+      "path": "수정 경로",
+      "op": "set | append | remove",
+      "value": "새 값 (remove면 null)",
+      "before_excerpt": "바뀌기 전 해당 부분 발췌 1구절",
+      "reason": "작가 지시의 어느 부분 때문인가 1문장"
+    }}
+  ],
+  "absorbed_questions": [
+    {{"source": "locked_seed.locked_creator_questions[0] 또는 pending_decisions[1]", "question": "흡수된 질문", "decision": "작가가 내린 결정 1문장", "absorbed_into": "locked_seed.locked_core_decisions"}}
+  ],
+  "warnings": ["충돌·사실성 경고 (없으면 빈 배열)"]
 }}
 """ + SHARED_RULES
