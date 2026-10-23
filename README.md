@@ -1,6 +1,6 @@
 # 💡 BLUE JEANS · Idea Engine
 
-**Version: v2.0** · Patch: v2.3.4 · Build: 2026-10-18 · Status: Production
+**Version: v2.0** · Patch: v2.3.5 · Build: 2026-10-23 · Status: Production
 
 > **모호한 아이디어 한 줄 → Creator Engine이 그대로 이어받는 LOCKED 시드 패키지**
 >
@@ -9,6 +9,40 @@
 > ⚠️ **버전 확인 방법**: `main.py` 상단 `ENGINE_PATCH_LEVEL` / Streamlit 사이드바 Engine Info / 이 README 최상단 — 세 곳의 버전이 일치해야 정상이다. 불일치 시 최신 파일로 덮어쓸 것.
 
 > 📌 **이 엔진의 존재 이유**: 시나리오를 다 쓴 뒤에 "애초에 콘셉트가 틀렸다"를 발견하는 일을 막는다. 아이디어 단계에서 걸러내는 비용이 가장 싸다.
+
+---
+
+## v2.3.5 패치 (2026-10-23) — Market Lens VN (베트남)
+
+기존 KR · JP · ID에 베트남(VN) 시장 프로필을 추가했다. 특정 작품·장르를 전제하지 않는 **범용 국가 프로필**이며, 작품이 입력된 뒤에만 적용된다.
+
+### 변경 파일
+| 파일 | 변경 |
+|---|---|
+| `market_lens_pack.py` | `VN_LENS` · `VN_SOURCES`(S1~S10) · `VN_DATA_AS_OF` · `MARKET_LABELS` · `is_vietnam_market()` · `get_vn_sources_text()` 추가. 매핑에 베트남 키워드(베트남·Vietnam·Việt Nam·VN·호찌민·호치민·하노이) 연결 |
+| `prompt.py` | SHARED_RULES·Stage 4·Stage 6에 베트남 반영. Stage 6 출력에 `vn_market_evaluation`(8축) 추가 |
+| `main.py` | 타겟 시장 선택지 3개 추가 · Stage 6 베트남 라벨·8축 평가 화면 · DOCX 보고서 반영 · 버전 표기 |
+
+### VN 프로필 구성
+- 시장 정체 · 8개 장르군(가족·휴먼 / 코미디·로코 / 로맨스·멜로 / 액션·범죄·스릴러 / 역사·전쟁 / 공포·미스터리 / 판타지·SF·애니 / 독립·예술) · 관객 · 제작·투자 · 극장·배급 · OTT · 개봉 시즌 · 문화·사회 · 법률·심의 · 구매자 4좌표 · 공동제작
+- 모든 산업 사실에 `[V·S번호]` 표시. 근거 등급 4종: `VERIFIED` / `INFERENCE` / `CREATIVE_JUDGMENT` / `VERIFICATION_REQUIRED`
+- 출처 간 수치가 다르면 합치지 않고 출처별로 병기 (예: 극장 점유율 S1·S4·S9, 2025 자국 영화 점유율 S3 62% vs S4 57%)
+- 제작비·손익분기점·수익률·미래 개봉 일정·특정 배급사 선택 가능성은 생성 금지
+- 장르 흥행 데이터는 경쟁·포화 판단에만 사용. 호러는 "포화·규제 주의 장르"로 먼저 본다
+
+### Stage 6 — VN 8축 평가 (`vn_market_evaluation`)
+VN이 1차 또는 2차 시장일 때만 채워진다. 시장 적합성 · 장르 경쟁력 · 관객 접근성 · 현지화 적합성 · 제작 실현성 · 배급 적합성 · 마케팅 가능성 · 규제 위험(위험이 낮을수록 고득점). 각 축의 근거마다 등급과 출처 번호를 단다. 예상 등급(P·K·T13·T16·T18·C)은 `CREATIVE_JUDGMENT`로 표기.
+
+### 매핑 보정
+베트남이 명시되고 인도네시아 고유 키워드(인도네시아·자카르타·Indonesia·JAFF)가 없으면 "동남아·SEA·Southeast"를 인도네시아로 읽지 않는다. (`"베트남 + Netflix SEA"` → VN 단독)
+
+### 하위 호환성
+- LOCKED 키 변경 없음 (24키 유지). Creator Engine 인계 스키마 불변.
+- 기존 KR · JP · ID 매핑 결과는 이전 코드와 동일 (회귀 테스트 12건 일치).
+- v2.3.5 이전 Stage 6 결과를 복원하면 8축 평가 자리에 재실행 안내만 표시된다.
+
+### 근거 자료 (기준일 2026-10-23)
+S1 ACFM A Report Vietnam 2026 H1 · S2 Cinemark 2026 H1 (Box Office Vietnam) · S3 ACFM A Report Vietnam 2025 H2 · S4 KOFIC 2025 베트남 결산 · S5 영화법 05/2022/QH15 · S6 Thông tư 05/2023/TT-BVHTTDL · S7 영화국장 공문 보도(2026-06) · S8 MoMo H1/2026 · S9 Tuổi Trẻ 극장 시장 보도 · S10 Doanh nhân Pháp luật OTT 보도. URL은 `market_lens_pack.VN_SOURCES` 참조.
 
 ---
 
@@ -383,6 +417,7 @@ Hook Score 5축 × 10점 = 50점 만점
 | KR | 한국 | 기본 프로파일 |
 | JP | 일본 | **3개 진입 트랙만 유효** — `INDIE_ARTHOUSE` / `KR_REMAKE_TARGET` / `COPROD_VIPO`. 그 외 경로는 0점 처리 |
 | ID | 인도네시아 | LSF 심의 · 라마단 개봉 타이밍 · JAFF Market · Joko Anwar 계보 등 문화·규제·산업 제약 반영 |
+| VN | 베트남 | 범용 국가 프로필 · 근거 등급 4종 · 출처 S1~S10 · Stage 6 8축 평가 (v2.3.5) |
 
 복합 시장(`"한국 + 일본 공동제작"`)은 primary / secondary 2단으로 해석한다.
 
@@ -509,6 +544,7 @@ Streamlit Cloud Secrets에 `ANTHROPIC_API_KEY` 필수. GitHub 푸시 시 1~2분 
 
 | 버전 | 날짜 | 변경 사항 |
 |---|---|---|
+| v2.3.5 | 2026-10-23 | Market Lens VN (베트남) · Stage 6 VN 8축 평가 · 근거 등급 4종 · DOCX 1차 시장명 표기 수정 |
 | v2.3.4 | 2026-10-18 | 시드 개정 모드 · 원안 의도 보존 · 로그라인 3막 · 3-A+ 재진입 수정 · 무결성 12종 · 결핍/상실 이식 |
 | v2.3.3 | 2026-10-18 | 작가 답변 우선 · LOCK 무결성 검사 7종 · Stage 7 입력 누락 수정 · 백업 하위 키 보존 |
 | v2.3 | 2026-08-03 | 포맷 구조화 단일화 · 미지정 경로 · 인계 메타데이터 · `meta.patch` 하드코딩 버그 수정 |

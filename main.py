@@ -41,8 +41,8 @@ import market_lens_pack as MLP
 # Engine Info
 # ─────────────────────────────────────
 ENGINE_VERSION = "v2.0"
-ENGINE_BUILD_DATE = "2026-10-18"
-ENGINE_PATCH_LEVEL = "v2.3.4 (시드 개정 모드 · 원안 의도 보존 · 로그라인 3막) + v2.3.3 (작가 답변 우선 · LOCK 무결성 검사) + v2.3.2 (HUNTER→TRIAGE 시드 폼 자동 입력) + v2.3.1 (HUNTER 입구 직접 진입 오류 수정) + v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
+ENGINE_BUILD_DATE = "2026-10-23"
+ENGINE_PATCH_LEVEL = "v2.3.5 (Market Lens VN · 베트남 8축 평가 · 근거 등급 4종) + v2.3.4 (시드 개정 모드 · 원안 의도 보존 · 로그라인 3막) + v2.3.3 (작가 답변 우선 · LOCK 무결성 검사) + v2.3.2 (HUNTER→TRIAGE 시드 폼 자동 입력) + v2.3.1 (HUNTER 입구 직접 진입 오류 수정) + v2.3 (포맷 구조화 · 인계 메타데이터) + v2.2 (로그라인 포맷 어휘 차단 · 직업 역할 확인) + v2.1 (3-C+ Hook 약점 보완 · 객관식) + v1.6.1 (시드/백업 파일명·라벨 명확화) + v1.6 (Story Core 5원칙) + v1.5 (3-A+ 보강) + v1.4.1 (Market Lens KR·JP·ID)"
 
 
 def _hunter_classified_entry_id() -> str:
@@ -349,7 +349,8 @@ with st.sidebar:
             <span style="color:#191970;font-weight:600;">+ v2.3.1 HUNTER 입구 직접 진입 오류 수정</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.3.2 HUNTER→TRIAGE 시드 폼 자동 입력</span><br>
             <span style="color:#191970;font-weight:600;">+ v2.3.3 작가 답변 우선 · LOCK 무결성 검사</span><br>
-            <span style="color:#191970;font-weight:600;">+ v2.3.4 시드 개정 모드 · 원안 의도 보존 · 로그라인 3막 · 무결성 12종</span>
+            <span style="color:#191970;font-weight:600;">+ v2.3.4 시드 개정 모드 · 원안 의도 보존 · 로그라인 3막 · 무결성 12종</span><br>
+            <span style="color:#191970;font-weight:600;">+ v2.3.5 Market Lens VN (KR·JP·ID·VN) · 베트남 8축 평가</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -948,7 +949,10 @@ def build_diagnostic_docx(state: Dict[str, Any]) -> bytes:
         mk = state["stage_6_market"]
         
         dom = mk.get("domestic_market", {})
-        add_para(doc, f"한국 시장 ({'★' * dom.get('stars', 0)})", bold=True, size=13)
+        _dom_name = dom.get("market_name") or MLP.MARKET_LABELS.get(
+            MLP.get_primary_market((state.get("stage_1_input") or {}).get("target_market", "")), ("한국", "")
+        )[0]
+        add_para(doc, f"{_dom_name} 시장 ({'★' * dom.get('stars', 0)})", bold=True, size=13)
         ta = dom.get("target_audience", {})
         add_para(doc, f"  타겟: {ta.get('gender', '')} {ta.get('age_range', '')} - {ta.get('psychographic', '')}")
         add_para(doc, f"  예산: {dom.get('budget_estimate', '')}")
@@ -983,6 +987,30 @@ def build_diagnostic_docx(state: Dict[str, Any]) -> bytes:
         for r in mk.get("risk_signals", []):
             add_para(doc, f"  • {r}")
         doc.add_paragraph()
+
+        # v2.3.5: 베트남 8축 평가
+        vn_eval = mk.get("vn_market_evaluation") or {}
+        if isinstance(vn_eval, dict) and vn_eval.get("applied") and vn_eval.get("axes"):
+            add_para(doc, "베트남 시장 8축 평가 (VN Market Lens)", bold=True, size=13)
+            for ax in vn_eval.get("axes", []):
+                if not isinstance(ax, dict):
+                    continue
+                add_para(doc, f"  {ax.get('label', ax.get('axis', ''))} ({'★' * _safe_stars(ax.get('stars'))})", bold=True)
+                add_para(doc, f"    {ax.get('verdict', '')}")
+                for ev in ax.get("evidence", []) or []:
+                    if isinstance(ev, dict):
+                        src = f" [{ev.get('source')}]" if ev.get("source") else ""
+                        add_para(doc, f"    - {ev.get('type', '')}: {ev.get('text', '')}{src}")
+            if vn_eval.get("expected_rating"):
+                add_para(doc, f"  예상 등급 (창작적 판단): {vn_eval.get('expected_rating')}")
+            if vn_eval.get("primary_window"):
+                add_para(doc, f"  1차 회수 창구: {vn_eval.get('primary_window')}")
+            for c in vn_eval.get("localization_conditions", []) or []:
+                add_para(doc, f"  • 현지화 조건: {c}")
+            for v in vn_eval.get("verification_required", []) or []:
+                add_para(doc, f"  • 추가 검증 필요: {v}")
+            add_para(doc, MLP.get_vn_sources_text(), size=8)
+            doc.add_paragraph()
 
     if state["stage_7_verdict"]:
         add_section_header_docx(doc, "7. 최종 판정", "FINAL VERDICT")
@@ -2160,6 +2188,75 @@ def _options_with_prefill(options, prefill, alias=None):
     return opts, 1
 
 
+# ─────────────────────────────────────
+# v2.3.5: 베트남 Market Lens 8축 평가 표시
+# ─────────────────────────────────────
+VN_EVIDENCE_LABELS = {
+    "VERIFIED": "VERIFIED · 자료로 확인된 산업 사실",
+    "INFERENCE": "INFERENCE · 자료 기반 분석적 추론",
+    "CREATIVE_JUDGMENT": "CREATIVE_JUDGMENT · 창작적·비평적 판단",
+    "VERIFICATION_REQUIRED": "VERIFICATION_REQUIRED · 추가 검증 필요",
+}
+
+
+def _safe_stars(value) -> int:
+    """stars 값이 문자열·범위 밖이어도 0~5 정수로 맞춘다."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(5, n))
+
+
+def render_vn_market_evaluation(mk: dict, target_market: str):
+    """Stage 6 결과에 vn_market_evaluation이 있으면 8축 평가를 표시한다.
+    베트남이 타겟 시장에 없으면 아무것도 표시하지 않는다."""
+    if not MLP.is_vietnam_market(target_market or ""):
+        return
+    vn_eval = mk.get("vn_market_evaluation") or {}
+    st.markdown("### 🇻🇳 베트남 시장 8축 평가 (VN Market Lens)")
+    if not isinstance(vn_eval, dict) or not vn_eval.get("axes"):
+        st.info("이 진단 결과에는 베트남 8축 평가가 없습니다. v2.3.5 이전 결과이거나 응답에서 빠진 경우입니다. 재실행하면 생성됩니다.")
+        return
+
+    axes = [a for a in vn_eval.get("axes", []) if isinstance(a, dict)]
+    rows = "".join(
+        f"<tr><td style='padding:4px 8px;'>{a.get('label', a.get('axis', ''))}</td>"
+        f"<td style='padding:4px 8px;color:#191970;'>{'★' * _safe_stars(a.get('stars'))}{'☆' * (5 - _safe_stars(a.get('stars')))}</td></tr>"
+        for a in axes
+    )
+    st.markdown(f"<table style='width:100%;font-size:.9rem;'>{rows}</table>", unsafe_allow_html=True)
+    st.caption("규제 위험 축은 위험이 낮을수록 별이 많습니다.")
+
+    for a in axes:
+        with st.expander(f"{a.get('label', a.get('axis', ''))} · {'★' * _safe_stars(a.get('stars'))}", expanded=False):
+            st.markdown(a.get("verdict", ""))
+            for ev in a.get("evidence", []) or []:
+                if not isinstance(ev, dict):
+                    continue
+                tag = VN_EVIDENCE_LABELS.get(ev.get("type", ""), ev.get("type", ""))
+                src = f" — 출처 {ev.get('source')}" if ev.get("source") else ""
+                st.markdown(f"- **{tag}**: {ev.get('text', '')}{src}")
+
+    if vn_eval.get("expected_rating"):
+        st.markdown(f"**예상 등급 (창작적 판단)**: {vn_eval.get('expected_rating')}")
+    if vn_eval.get("primary_window"):
+        st.markdown(f"**1차 회수 창구**: {vn_eval.get('primary_window')}")
+    conds = vn_eval.get("localization_conditions") or []
+    if conds:
+        st.markdown("**현지화 조건** (작가 설정·LOCKED 시드는 변경하지 않음)")
+        for c in conds:
+            st.markdown(f"- {c}")
+    vr = vn_eval.get("verification_required") or []
+    if vr:
+        st.markdown("**추가 검증 필요**")
+        for v in vr:
+            st.markdown(f"- {v}")
+    with st.expander("VN Market Lens 출처·기준일", expanded=False):
+        for line in MLP.get_vn_sources_text().split("\n"):
+            st.markdown(f"- {line}")
+
+
 def page_stage_1():
     section_header("📥 STEP 1 · 아이디어 입력", "FROM RAW IDEA")
     small_meta("모호한 아이디어 한 줄부터 한 단락까지 자유롭게 입력하세요. Idea Engine이 정제하여 Creator Engine이 이어받을 수 있는 LOCKED 시드 패키지로 변환합니다.")
@@ -2184,6 +2281,9 @@ def page_stage_1():
             "일본 (인디·공동제작·리메이크 트랙)",
             "인도네시아 (JAFF 트랙)",
             "인도네시아 + 한국 OTT (Netflix SEA)",
+            "베트남 (극장·OTT)",
+            "베트남 + 한국 공동제작",
+            "한국 + 베트남",
             "한국 + 일본 공동제작",
             "글로벌 (해외)",
             "직접 입력",
@@ -2215,7 +2315,7 @@ def page_stage_1():
                 "타겟 시장",
                 market_opts,
                 index=market_idx,
-                help="Market Lens가 자동 적용됩니다. 일본은 인디·공동제작·리메이크 3트랙만 진입 가능 (외 0점 처리)."
+                help="Market Lens가 자동 적용됩니다. 먼저 쓴 시장이 1차 시장입니다. 일본은 인디·공동제작·리메이크 3트랙만 진입 가능 (외 0점 처리). 베트남이 포함되면 8축 시장 평가가 추가됩니다."
             )
             if target_market == "직접 입력":
                 target_market = st.text_input("타겟 시장 직접 입력", key="market_direct")
@@ -3507,9 +3607,7 @@ def page_stage_6():
         
         # 1차 시장 코드 → 한글 라벨 + 국기 이모지
         market_label_map = {
-            "KR": ("한국 시장", "🇰🇷"),
-            "JP": ("일본 시장", "🇯🇵"),
-            "ID": ("인도네시아 시장", "🇮🇩"),
+            code: (f"{label} 시장", flag) for code, (label, flag) in MLP.MARKET_LABELS.items()
         }
         primary_label, primary_flag = market_label_map.get(
             primary_market_code, ("한국 시장", "🇰🇷")
@@ -3583,6 +3681,9 @@ def page_stage_6():
         st.markdown("### ⚠ 위험 신호")
         for r in mk.get("risk_signals", []):
             st.markdown(f"- {r}")
+
+        # v2.3.5: 베트남 8축 평가 (VN이 1차·2차 시장일 때만)
+        render_vn_market_evaluation(mk, inp.get("target_market", ""))
         
         st.markdown("---")
         cb, cr, cn = st.columns([1, 1, 2])
